@@ -273,7 +273,7 @@ function assemblySection(app) {
   const coll = app.collisions;
   return `<div class="sec"><h3>Assembly</h3>
     ${c.total ? `<div class="kv"><span>Parts</span><span>${c.total}</span><span>Placed</span><span>${c.placed}</span><span>To review</span><span>${c.ambiguous}</span><span>Not placed</span><span>${c.unplaced}</span><span>Mates</span><span>${app.mates.length}</span></div>` : '<div class="hint">Drop STL files, a folder or a zip to start. Or try the demo kit.</div>'}
-    <div class="btnrow" style="margin-top:8px">Rotate assembly <button class="small" data-ra="0">X 90°</button><button class="small" data-ra="1">Y 90°</button><button class="small" data-ra="2">Z 90°</button></div>
+    <div class="btnrow" style="margin-top:8px">Rotate assembly <button class="small" data-ra="0">X 90°</button><button class="small" data-ra="1">Y 90°</button><button class="small" data-ra="2">Z 90°</button><button class="small" data-flip="1" title="Turn the assembly upside down">Flip</button></div>
     <div class="btnrow"><button class="small" data-a="square" title="Align the main faces with X/Y/Z, biggest face down">Square to grid</button><button class="small" data-a="facedown" title="Click a face to lay the assembly on it">Lay flat on face…</button><button class="small" data-a="drop">Drop to Z=0</button></div>
     <div class="btnrow">Name <input id="asm-name" type="text" value="${esc(app.assemblyName || '')}" style="flex:1"></div>
   </div>
@@ -288,6 +288,10 @@ function assemblySection(app) {
 function bindAssembly(app) {
   const el = $('#inspector');
   el.querySelectorAll('[data-ra]').forEach((b) => (b.onclick = () => app.rotateAssembly(+b.dataset.ra)));
+  el.querySelectorAll('[data-flip]').forEach((b) => (b.onclick = () => {
+    app.rotateAssembly(0, 180);
+    app.dropToBed(false);
+  }));
   const q = (s) => el.querySelector(s);
   if (q('[data-a=facedown]')) q('[data-a=facedown]').onclick = () => app.setMode('face-down');
   if (q('[data-a=drop]')) q('[data-a=drop]').onclick = () => app.dropToBed();
