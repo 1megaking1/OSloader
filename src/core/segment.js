@@ -325,7 +325,7 @@ export function detectCylinders(mesh, patches, graph, opts = {}) {
 
 const scale3 = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 
-function finishCylinder(mesh, patches, region, a, vids, buf) {
+function finishCylinder(mesh, patches, region, a, vids, buf, items = null) {
   const [u, v] = basis(a);
   project(mesh, vids, u, v, buf);
   const f = fitCircle2D(buf, vids.length);
@@ -370,8 +370,8 @@ function finishCylinder(mesh, patches, region, a, vids, buf) {
   }
   // convexity from patch normals vs radial direction
   let conv = 0, area = 0;
-  for (const pid of region) {
-    const p = patches[pid];
+  for (const it of items || region) {
+    const p = items ? it : patches[it];
     const rel = [p.c[0] - c[0], p.c[1] - c[1], p.c[2] - c[2]];
     const ax = dot(rel, a);
     const rad = [rel[0] - a[0] * ax, rel[1] - a[1] * ax, rel[2] - a[2] * ax];
@@ -396,4 +396,229 @@ function finishCylinder(mesh, patches, region, a, vids, buf) {
     rms: f.rms,
     facets: region.length,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Triangle-level cylinder fitting for meshes whose bores are not tessellated
+// as clean facet strips (staggered / zig-zag triangulations, fine exports):
+// seed on curved triangles, estimate the axis from normal scatter, fit a
+// circle, then grow over neighbours whose vertices lie on the cylinder.
+
+/** Refine a cylinder (axis a, point p on axis, radius r) to vertices (Gauss-Newton, 5 dof). */
+export function refineCylinder(verts, vids, a0, p0, r0, iters = 6) {
+  let a = norm(a0), p = p0.slice(), r = r0;
+  const n = vids.length;
+  const step = Math.max(1, Math.floor(n / 400));
+  for (let it = 0; it < iters; it++) {
+    const [u, v] = basis(a);
+    // params: rotation of axis (du, dv), shift of point (su, sv), dr
+    const JtJ = Array.from({ length: 5 }, () => new Array(5).fill(0));
+    const g = new Array(5).fill(0);
+    let ss = 0, cnt = 0;
+    for (let i = 0; i < n; i += step) {
+      const k = vids[i] * 3;
+      const d = [verts[k] - p[0], verts[k + 1] - p[1], verts[k + 2] - p[2]];
+      const t = dot(d, a);
+      const q = [d[0] - a[0] * t, d[1] - a[1] * t, d[2] - a[2] * t];
+      const ql = Math.hypot(q[0], q[1], q[2]) || 1e-12;
+      const res = ql - r;
+      const qn = [q[0] / ql, q[1] / ql, q[2] / ql];
+      // derivatives: moving point by su*u -> dq = -u (projected) ; rotating axis by du*u -> dq = -t*u
+      const qu = dot(qn, u), qv = dot(qn, v);
+      const J = [-t * qu, -t * qv, -qu, -qv, -1];
+      for (let x = 0; x < 5; x++) {
+        g[x] += J[x] * res;
+        for (let y = 0; y < 5; y++) JtJ[x][y] += J[x] * J[y];
+      }
+      ss += res * res;
+      cnt++;
+    }
+    for (let x = 0; x < 5; x++) JtJ[x][x] += 1e-9 + JtJ[x][x] * 1e-6;
+    const sol = solveSmall(JtJ, g.map((x) => -x));
+    if (!sol) break;
+    a = norm([a[0] + u[0] * sol[0] + v[0] * sol[1], a[1] + u[1] * sol[0] + v[1] * sol[1], a[2] + u[2] * sol[0] + v[2] * sol[1]]);
+    p = [p[0] + u[0] * sol[2] + v[0] * sol[3], p[1] + u[1] * sol[2] + v[1] * sol[3], p[2] + u[2] * sol[2] + v[2] * sol[3]];
+    r += sol[4];
+    if (Math.abs(sol[0]) + Math.abs(sol[1]) < 1e-9 && Math.abs(sol[2]) + Math.abs(sol[3]) + Math.abs(sol[4]) < 1e-9) break;
+    void ss;
+    void cnt;
+  }
+  return { a, p, r: Math.abs(r) };
+}
+
+function solveSmall(A, b) {
+  const n = b.length;
+  const m = A.map((row) => row.slice());
+  const x = b.slice();
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(m[r][c]) > Math.abs(m[piv][c])) piv = r;
+    if (Math.abs(m[piv][c]) < 1e-300) return null;
+    [m[piv], m[c]] = [m[c], m[piv]];
+    [x[piv], x[c]] = [x[c], x[piv]];
+    for (let r = c + 1; r < n; r++) {
+      const f = m[r][c] / m[c][c];
+      for (let k = c; k < n; k++) m[r][k] -= f * m[c][k];
+      x[r] -= f * x[c];
+    }
+  }
+  const out = new Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let s = x[r];
+    for (let k = r + 1; k < n; k++) s -= m[r][k] * out[k];
+    out[r] = s / m[r][r];
+  }
+  return out;
+}
+
+/**
+ * Additional cylinders from triangles that the patch-based detector left over.
+ * Mutates cyls/inCyl (per patch) in place.
+ */
+export function detectCylindersTri(mesh, patches, triPatch, cyls, inCyl, opts = {}) {
+  const { T, tris, verts, normals, areas, adj } = mesh;
+  const diag = mesh.diag;
+  const cosSmooth = Math.cos(rad(55));
+  const tolFor = (r) => Math.max(0.01, r * 2.5e-3, diag * 2e-5);
+  const blocked = new Uint8Array(T);
+  for (let t = 0; t < T; t++) {
+    const pid = triPatch[t];
+    if (inCyl[pid] >= 0 || patches[pid].tris.length > 4 || areas[t] <= 0) blocked[t] = 1;
+  }
+  const used = new Uint8Array(T);
+  const tried = new Uint8Array(T);
+  const stamp = new Int32Array(T).fill(-1);
+  const vstamp = new Int32Array(mesh.V).fill(-1);
+  let st = 0;
+  const buf = new Float64Array(2 * mesh.V);
+  const order = [];
+  for (let t = 0; t < T; t++) if (!blocked[t]) order.push(t);
+  order.sort((a, b) => areas[b] - areas[a]);
+  const nrm = (t) => [normals[t * 3], normals[t * 3 + 1], normals[t * 3 + 2]];
+  const cen = (t) => {
+    const A = tris[t * 3] * 3, B = tris[t * 3 + 1] * 3, C = tris[t * 3 + 2] * 3;
+    return [(verts[A] + verts[B] + verts[C]) / 3, (verts[A + 1] + verts[B + 1] + verts[C + 1]) / 3, (verts[A + 2] + verts[B + 2] + verts[C + 2]) / 3];
+  };
+  const added = [];
+  for (const seed of order) {
+    if (used[seed] || tried[seed]) continue;
+    tried[seed] = 1;
+    // neighbourhood over smooth edges
+    const s0 = ++st;
+    const nb = [seed];
+    stamp[seed] = s0;
+    for (let qi = 0; qi < nb.length && nb.length < 24; qi++) {
+      const t = nb[qi];
+      for (let k = 0; k < 3; k++) {
+        const o = adj[t * 3 + k];
+        if (o < 0 || stamp[o] === s0 || blocked[o] || used[o]) continue;
+        if (dot(nrm(t), nrm(o)) < cosSmooth) continue;
+        stamp[o] = s0;
+        nb.push(o);
+      }
+    }
+    if (nb.length < 5) continue;
+    // axis from normal scatter
+    const S = [0, 0, 0, 0, 0, 0];
+    let wsum = 0;
+    for (const t of nb) {
+      const n = nrm(t), w = areas[t];
+      S[0] += w * n[0] * n[0];
+      S[1] += w * n[0] * n[1];
+      S[2] += w * n[0] * n[2];
+      S[3] += w * n[1] * n[1];
+      S[4] += w * n[1] * n[2];
+      S[5] += w * n[2] * n[2];
+      wsum += w;
+    }
+    const e = eigSym3(S.map((x) => x / wsum));
+    if (e.values[1] < 0.004 || e.values[0] > 0.25 * e.values[1]) continue; // too flat or not cylindrical
+    let a = e.vectors[0];
+    const vs = new Set();
+    for (const t of nb) for (let k = 0; k < 3; k++) vs.add(tris[t * 3 + k]);
+    let vids = Array.from(vs);
+    const [u, v] = basis(a);
+    project(mesh, vids, u, v, buf);
+    const f = fitCircle2D(buf, vids.length);
+    if (!f || f.r > diag || f.r < 0.2) continue;
+    let p = [u[0] * f.cx + v[0] * f.cy, u[1] * f.cx + v[1] * f.cy, u[2] * f.cx + v[2] * f.cy];
+    let cyl = refineCylinder(verts, vids, a, p, f.r, 6);
+    a = cyl.a;
+    p = cyl.p;
+    let r = cyl.r;
+    let tol = tolFor(r);
+    const onCyl = (vi) => {
+      const k = vi * 3;
+      const d = [verts[k] - p[0], verts[k + 1] - p[1], verts[k + 2] - p[2]];
+      const tt = dot(d, a);
+      return Math.abs(Math.hypot(d[0] - a[0] * tt, d[1] - a[1] * tt, d[2] - a[2] * tt) - r) <= tol;
+    };
+    if (!vids.every(onCyl)) continue;
+    // orientation of the seed
+    const radialSign = (t) => {
+      const c = cen(t);
+      const d = [c[0] - p[0], c[1] - p[1], c[2] - p[2]];
+      const tt = dot(d, a);
+      const q = norm([d[0] - a[0] * tt, d[1] - a[1] * tt, d[2] - a[2] * tt]);
+      return dot(q, nrm(t));
+    };
+    const sgn = Math.sign(radialSign(seed));
+    // grow
+    const s1 = ++st;
+    const region = [];
+    const queue = nb.slice();
+    for (const t of queue) stamp[t] = s1;
+    let nextRefit = 32;
+    for (let qi = 0; qi < queue.length; qi++) {
+      const t = queue[qi];
+      const rs = radialSign(t);
+      if (Math.sign(rs) !== sgn || Math.abs(rs) < 0.85) continue;
+      let ok = true;
+      for (let k = 0; k < 3 && ok; k++) ok = onCyl(tris[t * 3 + k]);
+      if (!ok) continue;
+      region.push(t);
+      if (region.length >= nextRefit) {
+        nextRefit *= 2;
+        const vv = new Set();
+        for (const x of region) for (let k = 0; k < 3; k++) vv.add(tris[x * 3 + k]);
+        const rc = refineCylinder(verts, Array.from(vv), a, p, r, 3);
+        a = rc.a;
+        p = rc.p;
+        r = rc.r;
+        tol = tolFor(r);
+      }
+      for (let k = 0; k < 3; k++) {
+        const o = adj[t * 3 + k];
+        if (o < 0 || stamp[o] === s1 || blocked[o] || used[o]) continue;
+        stamp[o] = s1;
+        queue.push(o);
+      }
+    }
+    if (region.length < 6) continue;
+    const s2 = ++st;
+    vids = [];
+    for (const x of region) for (let k = 0; k < 3; k++) {
+      const vi = tris[x * 3 + k];
+      if (vstamp[vi] !== s2) {
+        vstamp[vi] = s2;
+        vids.push(vi);
+      }
+    }
+    const items = region.map((t) => ({ c: cen(t), n: nrm(t), area: areas[t] }));
+    const c = finishCylinder(mesh, patches, [], a, vids, buf, items);
+    if (!c || c.span < rad(60) || c.len < Math.max(0.15, 0.04 * c.r) || c.rms > tolFor(c.r)) continue;
+    c.facets = region.length;
+    c.tri = true;
+    for (const t of region) used[t] = 1;
+    // patches belong to the cylinder if most of their triangles do
+    const pcount = new Map();
+    for (const t of region) pcount.set(triPatch[t], (pcount.get(triPatch[t]) || 0) + 1);
+    c.patches = [];
+    for (const [pid, n] of pcount) if (n * 2 >= patches[pid].tris.length && inCyl[pid] < 0) c.patches.push(pid);
+    c.id = cyls.length;
+    for (const pid of c.patches) inCyl[pid] = c.id;
+    cyls.push(c);
+    added.push(c);
+  }
+  return added;
 }

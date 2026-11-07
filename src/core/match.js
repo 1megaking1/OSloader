@@ -147,6 +147,30 @@ export const clearanceWeight = (cl) => (cl <= 0.3 ? 1 : Math.max(0.35, 1 - (cl -
 
 const usableCyl = (c) => c.span >= rad(150) && c.r >= 0.4 && c.len >= 0.4;
 
+/** non-enumerable per-analysis cache (survives structured cloning as absent, rebuilt lazily) */
+function cache(P, key, fn) {
+  if (!P._cache) Object.defineProperty(P, '_cache', { value: new Map(), enumerable: false, writable: true });
+  if (!P._cache.has(key)) P._cache.set(key, fn());
+  return P._cache.get(key);
+}
+const usableCyls = (P) => cache(P, 'ucyl', () => P.cyls.filter(usableCyl));
+const shiftPlanes = (P) => cache(P, 'splanes', () => P.planes.filter((p) => p.area >= 0.5).sort((a, b) => b.area - a.area).slice(0, 120));
+
+/** B's bounding box mapped into A's frame by T, padded */
+function boxIn(B, T, pad) {
+  const { min, max } = B.stats.bbox;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < 8; i++) {
+    const p = mPoint(T, [i & 1 ? max[0] : min[0], i & 2 ? max[1] : min[1], i & 4 ? max[2] : min[2]]);
+    for (let k = 0; k < 3; k++) {
+      if (p[k] - pad < lo[k]) lo[k] = p[k] - pad;
+      if (p[k] + pad > hi[k]) hi[k] = p[k] + pad;
+    }
+  }
+  return { lo, hi };
+}
+const inBox = (b, p, r = 0) => p[0] >= b.lo[0] - r && p[0] <= b.hi[0] + r && p[1] >= b.lo[1] - r && p[1] <= b.hi[1] + r && p[2] >= b.lo[2] - r && p[2] <= b.hi[2] + r;
+
 /** Can B's cylinder sit coaxially with A's cylinder? returns kind or null */
 export function cylCompat(cb, ca, opt = DEFAULTS) {
   if (cb.concave !== ca.concave) {
@@ -197,12 +221,13 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
   const cosT = Math.cos(rad(opt.angTol));
   let score = 0;
   const usedA = new Set();
-  for (const cb of B.cyls) {
-    if (!usableCyl(cb)) continue;
+  const bbox = boxIn(B, T, 2 + opt.stackGap);
+  const candA = usableCyls(A).filter((ca) => inBox(bbox, ca.c, ca.len / 2 + ca.r));
+  for (const cb of usableCyls(B)) {
     const w = cylWorld(cb, T);
     let best = null;
-    for (const ca of A.cyls) {
-      if (!usableCyl(ca) || usedA.has('c' + ca.id)) continue;
+    for (const ca of candA) {
+      if (usedA.has('c' + ca.id)) continue;
       if (Math.abs(dot(w.a, ca.a)) < cosT) continue;
       const kind = cylCompat(cb, ca, opt);
       if (!kind) continue;
@@ -221,10 +246,11 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
     }
   }
   // tab / slot centring
+  const pairsA = A.pairs.filter((pa) => inBox(bbox, pa.mid, Math.sqrt(A.planes[pa.i].area) + pa.width));
   for (const pb of B.pairs) {
     const nb = norm(mDir(T, pb.n));
     const mb = mPoint(T, pb.mid);
-    for (const pa of A.pairs) {
+    for (const pa of pairsA) {
       if (pa.concave === pb.concave) continue;
       if (Math.abs(dot(nb, pa.n)) < cosT) continue;
       const slot = pa.concave ? pa : pb, tab = pa.concave ? pb : pa;
@@ -256,13 +282,15 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
 function axialShifts(A, B, T, ax, checks, opt) {
   const cosT = Math.cos(rad(3));
   const shifts = [];
-  const Bp = B.planes.map((p) => ({ n: norm(mDir(T, p.n)), c: mPoint(T, p.c), area: p.area }));
+  const Ap = shiftPlanes(A).filter((pa) => Math.abs(dot(pa.n, ax)) >= cosT);
+  const Bp = [];
+  for (const p of shiftPlanes(B)) {
+    const n = norm(mDir(T, p.n));
+    if (Math.abs(dot(n, ax)) >= cosT) Bp.push({ n, c: mPoint(T, p.c), area: p.area });
+  }
   for (const pb of Bp) {
-    const ab = dot(pb.n, ax);
-    if (Math.abs(ab) < cosT) continue;
-    for (const pa of A.planes) {
+    for (const pa of Ap) {
       const aa = dot(pa.n, ax);
-      if (Math.abs(aa) < cosT) continue;
       const s = dot(sub(pa.c, pb.c), pa.n) / aa;
       if (dot(pb.n, pa.n) < 0) shifts.push({ s, kind: 'contact', w: Math.min(pb.area, pa.area) });
       else shifts.push({ s, kind: 'flush', w: 0.3 * Math.min(pb.area, pa.area) });
@@ -340,7 +368,9 @@ function shiftT(T, ax, s) {
 // ------------------------------------------------------------ generators
 
 function cylPairs(P, ordered) {
-  const cs = P.cyls.filter(usableCyl);
+  const key = 'cpairs' + (ordered ? 1 : 0);
+  if (P._cache && P._cache.has(key)) return P._cache.get(key);
+  const cs = usableCyls(P);
   const out = [];
   const cosT = Math.cos(rad(1.5));
   for (let i = 0; i < cs.length; i++) {
@@ -354,13 +384,33 @@ function cylPairs(P, ordered) {
       out.push({ a, b, d, x: scale(dv, 1 / d) });
     }
   }
-  return out;
+  return cache(P, key, () => out);
+}
+
+/** how many of B's bores/pegs line up with a compatible bore/peg of A under T (axial-invariant) */
+function cylSupport(A, B, T, opt) {
+  const ua = usableCyls(A);
+  let n = 0;
+  const cosT = Math.cos(rad(1.5));
+  for (const cb of usableCyls(B)) {
+    const a = norm(mDir(T, cb.a)), c = mPoint(T, cb.c);
+    for (const ca of ua) {
+      if (Math.abs(dot(a, ca.a)) < cosT) continue;
+      if (lineDist(c, ca) > 0.3) continue;
+      const kind = cylCompat(cb, ca, opt);
+      if (!kind) continue;
+      n += (kind === 'insert' ? 1 : 0.5) * (cb.full && ca.full ? 1 : 0.5);
+      break;
+    }
+  }
+  return n;
 }
 
 function genCylPairs(A, B, opt, push) {
   const pa = cylPairs(A, false), pb = cylPairs(B, true);
   if (!pa.length || !pb.length) return;
   pa.sort((x, y) => x.d - y.d);
+  const corr = [];
   for (const q of pb) {
     const tol = 0.3 + 0.01 * q.d;
     // binary search window on d
@@ -378,14 +428,27 @@ function genCylPairs(A, B, opt, push) {
       for (const s of [1, -1]) {
         const zA = scale(p.a.a, s);
         const T0 = frameMap(p.a.c, p.x, zA, q.a.c, q.x, q.a.a);
-        const checks = [
-          { cb: q.a, ca: p.a, kind: k1 },
-          { cb: q.b, ca: p.b, kind: k2 },
-        ];
-        for (const sh of axialShifts(A, B, T0, zA, checks, opt)) {
-          push(shiftT(T0, zA, sh.s), 'bore-pair', { shift: sh.kind, cyl: [q.a.id, p.a.id, q.b.id, p.b.id] });
-        }
+        corr.push({ T0, zA, q, p, k1, k2, sup: cylSupport(A, B, T0, opt) });
       }
+    }
+  }
+  if (!corr.length) return;
+  // keep the best supported correspondences (RANSAC-style inlier count)
+  corr.sort((x, y) => y.sup - x.sup);
+  const best = corr[0].sup;
+  const keep = corr.filter((c, i) => i < 80 || (c.sup >= best - 1 && i < 240));
+  // dedupe identical frames
+  const seen = new Set();
+  for (const c of keep) {
+    const key = [mPoint(c.T0, B.stats.centroid), mDir(c.T0, [1, 0, 0]), mDir(c.T0, [0, 1, 0])].map((v) => v.map((x) => Math.round(x * 20)).join(',')).join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const checks = [
+      { cb: c.q.a, ca: c.p.a, kind: c.k1 },
+      { cb: c.q.b, ca: c.p.b, kind: c.k2 },
+    ];
+    for (const sh of axialShifts(A, B, c.T0, c.zA, checks, opt).sort((x, y) => y.w - x.w).slice(0, 24)) {
+      push(shiftT(c.T0, c.zA, sh.s), 'bore-pair', { shift: sh.kind, support: c.sup });
     }
   }
 }
@@ -569,8 +632,7 @@ export function revolutionSymmetric(B, c) {
 function genSingleCyl(A, B, opt, push) {
   const cb = B.cyls.filter((c) => usableCyl(c) && (c.full || c.span > rad(240))).sort((x, y) => y.r * y.len - x.r * x.len).slice(0, 3);
   if (!cb.length) return;
-  const ca = A.cyls.filter((c) => usableCyl(c));
-  const cosT = Math.cos(rad(3));
+  const ca = usableCyls(A);
   for (const b of cb) {
     for (const a of ca) {
       const kind = cylCompat(b, a, opt);
@@ -639,10 +701,32 @@ export function pairHypotheses(A, B, opt0 = {}) {
   const fullB = B.cyls.filter((c) => usableCyl(c) && c.full).length;
   if (fullB < 2 || nPairHyps === 0 || opt.alwaysSweep) genSingleCyl(A, B, opt, push);
   if (!raw.length) return [];
-  // prescreen with subsampled scoring plus feature evidence
-  for (const h of raw) h.pre = evalPose(A, B, h.T, opt, 4).score + opt.featWeight * featureMatches(A, B, h.T, opt).score;
-  raw.sort((a, b) => b.pre - a.pre);
-  const top = raw.slice(0, opt.maxFull ?? 48);
+  // collapse identical poses produced by different correspondences
+  {
+    const c = B.stats.centroid, ext = Math.max(5, B.stats.diag / 2);
+    const probes = [c, add(c, [ext, 0, 0]), add(c, [0, ext, 0])];
+    const seen = new Set();
+    const q = 0.05;
+    const uniq = [];
+    for (const h of raw) {
+      const key = probes.map((p) => mPoint(h.T, p).map((v) => Math.round(v / q)).join(',')).join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(h);
+    }
+    raw.length = 0;
+    raw.push(...uniq);
+  }
+  // stage 1: feature evidence only (cheap); stage 2: coarse SDF on the best few hundred
+  const t0 = Date.now();
+  for (const h of raw) h.fs = featureMatches(A, B, h.T, opt).score;
+  raw.sort((a, b) => b.fs - a.fs);
+  const stage2 = raw.length > 900 ? raw.slice(0, 600).concat(sampleEvery(raw.slice(600), 300)) : raw;
+  const t1 = Date.now();
+  for (const h of stage2) h.pre = evalPose(A, B, h.T, opt, 6).score + opt.featWeight * h.fs + (h.prior || shiftPrior(h.info && h.info.shift));
+  stage2.sort((a, b) => b.pre - a.pre);
+  const top = stage2.slice(0, opt.maxFull ?? 48);
+  if (opt.debugTiming) console.log(`raw ${raw.length} stage2 ${stage2.length} feat ${t1 - t0}ms sdf ${Date.now() - t1}ms`);
   for (const h of top) {
     const e = evalPose(A, B, h.T, opt, 1);
     const fm = featureMatches(A, B, h.T, opt);
@@ -656,6 +740,14 @@ export function pairHypotheses(A, B, opt0 = {}) {
   }
   top.sort((a, b) => b.score - a.score);
   return dedupe(B, top, 0.15).slice(0, opt.keep ?? 8);
+}
+
+function sampleEvery(list, n) {
+  if (list.length <= n) return list;
+  const out = [];
+  const step = list.length / n;
+  for (let i = 0; i < n; i++) out.push(list[Math.floor(i * step)]);
+  return out;
 }
 
 /** Remove poses that put B into (nearly) the same occupied space. */

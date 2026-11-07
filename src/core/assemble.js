@@ -513,7 +513,7 @@ export function autoAssemble(parts, opts = {}) {
     placed.set(bid, W);
     placeOrder.push(bid);
     const second = alts.length > 1 ? alts[1].score : 0;
-    const margin = c.score > 0 ? (c.score - second) / c.score : 0;
+    const margin = c.score > 0 ? Math.max(0, (c.score - second) / c.score) : 0;
     result.placements[bid] = {
       status: margin < 0.12 ? 'ambiguous' : 'placed',
       score: c.score,

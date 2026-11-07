@@ -3,7 +3,7 @@
 // a shape signature used for version detection.
 
 import { buildMesh, principalAxes } from './mesh.js';
-import { segmentPlanar, patchGraph, detectCylinders } from './segment.js';
+import { segmentPlanar, patchGraph, detectCylinders, detectCylindersTri } from './segment.js';
 import { computeSDF } from './sdf.js';
 import { dot, cross, norm, sub, add, scale, rad, rng } from './math.js';
 
@@ -16,6 +16,7 @@ export function analyzePart(positions, opts = {}) {
   const seg = segmentPlanar(mesh, opts);
   const graph = patchGraph(mesh, seg.triPatch, seg.patches.length);
   const { cyls, inCyl } = detectCylinders(mesh, seg.patches, graph, opts);
+  if (opts.triCylinders !== false) detectCylindersTri(mesh, seg.patches, seg.triPatch, cyls, inCyl, opts);
 
   const totalArea = mesh.area;
   const minPlaneArea = Math.max(0.15, totalArea * 5e-5);
