@@ -310,8 +310,9 @@ export function autoAssemble(parts, opts = {}) {
   for (const g of groups) for (const m of g.members) if (m !== g.rep) memberOf.set(m, g);
   const nodes = parts.filter((p) => !memberOf.has(p.id) && !(opts.exclude || []).includes(p.id));
 
-  // 2. root
-  const root = opts.root && byId.has(opts.root) && !memberOf.has(opts.root) ? opts.root : nodes.slice().sort((a, b) => b.an.stats.volume - a.an.stats.volume)[0].id;
+  // 2. root (or the user's locked parts)
+  const fixed = opts.fixed ? new Map(Object.entries(opts.fixed).filter(([id]) => byId.has(id) && !memberOf.has(id))) : new Map();
+  const root = fixed.size ? fixed.keys().next().value : opts.root && byId.has(opts.root) && !memberOf.has(opts.root) ? opts.root : nodes.slice().sort((a, b) => b.an.stats.volume - a.an.stats.volume)[0].id;
 
   // 3. pairwise hypotheses
   const hyps = opts.hyps || new Map();
@@ -343,9 +344,10 @@ export function autoAssemble(parts, opts = {}) {
   // 4. greedy placement
   const ctx = { parts: new Map() };
   for (const p of parts) ctx.parts.set(p.id, { an: p.an, pose: mIdentity() });
-  const placed = new Map([[root, mIdentity()]]);
-  const result = { root, placements: {}, groups, order: [root], unplaced: [], instances: [], mates: [] };
-  result.placements[root] = { status: 'root', score: 1, alternatives: [] };
+  const placed = fixed.size ? new Map(fixed) : new Map([[root, mIdentity()]]);
+  for (const [id, P] of placed) ctx.parts.get(id).pose = P;
+  const result = { root, placements: {}, groups, order: Array.from(placed.keys()), unplaced: [], instances: [], mates: [] };
+  for (const id of placed.keys()) result.placements[id] = { status: id === root ? 'root' : 'locked', score: 1, alternatives: [] };
 
   const cands = new Map(); // bid -> [{W, from, source, acc, score}]
   const addFrom = (xid) => {
@@ -389,7 +391,7 @@ export function autoAssemble(parts, opts = {}) {
     c.score = globalScore(B, c.acc, opt) + (c.prior || 0);
   };
 
-  addFrom(root);
+  for (const id of placed.keys()) addFrom(id);
   for (const [bid, list] of cands) for (const c of list) evalCand(bid, c);
 
   const placeOrder = [];
@@ -561,5 +563,96 @@ export function autoAssemble(parts, opts = {}) {
     result.placements[p.id] = { status: 'unplaced', score: 0, alternatives: (cands.get(p.id) || []).sort((a, b) => b.score - a.score).slice(0, 5).map((a) => ({ W: a.W, score: a.score, from: a.from, source: a.source })) };
   }
   result.poses = Object.fromEntries(placed);
+  result.hyps = hyps;
   return result;
+}
+
+/**
+ * Candidate placements for one part against an existing (partial) assembly.
+ * @param parts all parts {id, name, an}
+ * @param targetId part to place (may be an instance id 'x#2' sharing base geometry)
+ * @param poses {id: worldPose} of already placed parts
+ */
+export function suggestPlacements(parts, targetId, poses, opts = {}) {
+  const opt = { ...DEFAULTS, ...(opts.match || {}) };
+  const byId = new Map(parts.map((p) => [p.id, p]));
+  const B = byId.get(baseOf(targetId))?.an;
+  if (!B) return [];
+  const hyps = opts.hyps || new Map();
+  const getHyps = (aid, bid) => {
+    const k = aid + '\u0001' + bid, k2 = bid + '\u0001' + aid;
+    if (hyps.has(k)) return hyps.get(k);
+    if (hyps.has(k2)) return hyps.get(k2).map((x) => ({ ...x, T: mInvRigid(x.T) }));
+    const A = byId.get(aid).an, Bb = byId.get(bid).an;
+    const h = pairHypotheses(A, Bb, { ...opt, keep: 16 });
+    hyps.set(k, h);
+    return h;
+  };
+  const cands = [];
+  for (const [xid, PX] of Object.entries(poses)) {
+    if (xid === targetId || !byId.has(baseOf(xid))) continue;
+    if (baseOf(xid) === baseOf(targetId)) continue;
+    for (const h of getHyps(baseOf(xid), baseOf(targetId))) cands.push({ W: mMul(PX, h.T), from: xid, source: h.source, info: h.info, prior: h.prior || 0 });
+  }
+  for (const c of cands) {
+    const acc = { contactArea: 0, penArea: 0, feat: 0 };
+    const box = worldBox(B, c.W, 1);
+    for (const [xid, PX] of Object.entries(poses)) {
+      if (xid === targetId) continue;
+      const X = byId.get(baseOf(xid))?.an;
+      if (!X || !boxOverlap(box, worldBox(X, PX, 1))) continue;
+      const cb = contribution(X, PX, B, c.W, opt);
+      acc.contactArea += cb.contactArea;
+      acc.penArea += cb.penArea;
+      acc.feat += cb.feat;
+    }
+    c.acc = acc;
+    c.score = globalScore(B, acc, opt) + c.prior;
+    c.pen = acc.penArea / B.stats.area;
+  }
+  const pts = [];
+  for (let i = 0; i < B.samples.n; i += Math.max(1, Math.floor(B.samples.n / 64))) pts.push([B.samples.pos[i * 3], B.samples.pos[i * 3 + 1], B.samples.pos[i * 3 + 2]]);
+  cands.sort((a, b) => b.score - a.score - 3 * (b.pen - a.pen));
+  const out = [];
+  for (const c of cands) {
+    if (out.some((o) => samePlace(B, pts, c.W, o.W))) continue;
+    out.push(c);
+    if (out.length >= (opts.max ?? 10)) break;
+  }
+  return out.map((c) => ({ W: c.W, score: c.score, pen: c.pen, from: c.from, source: c.source, info: c.info }));
+}
+
+/** Snap a part at pose W onto its neighbours with inferred mates. */
+export function snapToNeighbours(parts, id, W, poses, opts = {}) {
+  const ctx = { parts: new Map() };
+  for (const p of parts) ctx.parts.set(p.id, { an: p.an, pose: mIdentity() });
+  for (const [pid, P] of Object.entries(poses)) {
+    const base = parts.find((p) => p.id === baseOf(pid));
+    if (base) ctx.parts.set(pid, { an: base.an, pose: P });
+  }
+  const base = parts.find((p) => p.id === baseOf(id));
+  ctx.parts.set(id, { an: base.an, pose: W });
+  const mates = inferMates(ctx, id, W, Object.keys(poses).filter((k) => k !== id), { ...DEFAULTS, ...(opts.match || {}) });
+  const snapped = snapPart(ctx, id, mates);
+  return { pose: snapped.pose, mates: snapped.mates, freeDOF: snapped.freeDOF };
+}
+
+/** Pairwise interference between placed parts. */
+export function interference(parts, poses, opts = {}) {
+  const opt = { ...DEFAULTS, ...(opts.match || {}) };
+  const ids = Object.keys(poses);
+  const out = [];
+  for (let i = 0; i < ids.length; i++) {
+    const A = parts.find((p) => p.id === baseOf(ids[i]))?.an;
+    if (!A) continue;
+    const ba = worldBox(A, poses[ids[i]]);
+    for (let j = i + 1; j < ids.length; j++) {
+      const B = parts.find((p) => p.id === baseOf(ids[j]))?.an;
+      if (!B || !boxOverlap(ba, worldBox(B, poses[ids[j]]))) continue;
+      const T = mMul(mInvRigid(poses[ids[i]]), poses[ids[j]]);
+      const e = evalPose(A, B, T, opt, 1);
+      if (e.penArea > 0.5) out.push({ a: ids[i], b: ids[j], penArea: e.penArea, frac: e.pen });
+    }
+  }
+  return out.sort((x, y) => y.penArea - x.penArea);
 }

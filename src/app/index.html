@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STL Assembler</title>
+<!--STYLE-->
+</head>
+<body>
+<div id="app">
+  <header id="toolbar">
+    <div class="brand"><span class="logo">◈</span> STL Assembler</div>
+    <div class="group">
+      <button id="btn-open" title="Open STL / OBJ / 3MF / ZIP files (or drag &amp; drop anywhere)">Open files</button>
+      <button id="btn-folder" title="Open a whole folder of parts">Folder</button>
+    </div>
+    <div class="group">
+      <button id="btn-auto" class="primary" title="Detect features and assemble all parts automatically (A)">⚡ Auto-assemble</button>
+      <button id="btn-review" title="Step through parts that have several possible placements (R)">Review <span id="review-count" class="badge">0</span></button>
+    </div>
+    <div class="group">
+      <button id="btn-undo" title="Undo (Ctrl/Cmd+Z)">↶</button>
+      <button id="btn-redo" title="Redo (Ctrl/Cmd+Shift+Z)">↷</button>
+    </div>
+    <div class="group">
+      <button id="btn-mate" title="Create a mate by clicking a feature on the moving part, then on the target part (M)">🔗 Mate</button>
+      <button id="btn-measure" title="Measure diameters, distances and angles between features (D)">📏 Measure</button>
+      <button id="btn-interf" title="Check for parts that intersect each other">Collisions</button>
+    </div>
+    <div class="group view">
+      <button id="btn-fit" title="Zoom to fit (F)">Fit</button>
+      <label class="slider" title="Exploded view (visual only)">Explode <input id="explode" type="range" min="0" max="100" value="0"></label>
+      <button id="btn-section" title="Section (clipping) view">Section</button>
+      <button id="btn-features" title="Show detected bores/pegs axes">Axes</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="group">
+      <div class="menu">
+        <button id="btn-export" class="primary" title="Export the assembly">Export ▾</button>
+        <div class="menu-items" id="export-menu">
+          <button data-export="stl-bin"><b>STL</b> – one file, multiple bodies (binary)</button>
+          <button data-export="stl-ascii"><b>STL</b> – one file, named solids (ASCII)</button>
+          <button data-export="3mf-objects"><b>3MF</b> – one file, separate objects</button>
+          <button data-export="3mf-assembly"><b>3MF</b> – one object, multiple parts</button>
+          <button data-export="zip">ZIP of individual STLs (assembled positions)</button>
+          <hr>
+          <button data-export="project">Save project (.json)</button>
+          <button data-export="project-zip">Save project + meshes (.zip)</button>
+          <label class="menu-opt"><input type="checkbox" id="exp-drop" checked> Drop assembly onto Z=0</label>
+          <label class="menu-opt"><input type="checkbox" id="exp-hidden"> Include hidden parts</label>
+        </div>
+      </div>
+      <button id="btn-settings" title="Settings">⚙</button>
+      <button id="btn-help" title="Help">?</button>
+    </div>
+  </header>
+
+  <aside id="left">
+    <div class="panel-head">
+      <span>Parts <span id="part-count" class="muted"></span></span>
+      <input id="part-filter" type="search" placeholder="filter…">
+    </div>
+    <div id="parts"></div>
+    <div id="summary"></div>
+  </aside>
+
+  <main id="viewport">
+    <div id="drop-hint">
+      <div class="drop-card">
+        <div class="big">Drop STL files, a folder or a .zip here</div>
+        <div>Parts are analysed for bores, pegs, slots, tabs and faces, then auto-assembled.<br>Everything runs locally in your browser – nothing is uploaded.</div>
+        <div class="row"><button id="btn-open2" class="primary">Open files</button> <button id="btn-folder2">Open folder</button> <button id="btn-demo">Load demo kit</button></div>
+      </div>
+    </div>
+    <div id="banner" hidden></div>
+    <div id="section-ctl" hidden>
+      <select id="sec-axis"><option value="0">X</option><option value="1">Y</option><option value="2" selected>Z</option></select>
+      <input id="sec-pos" type="range" min="0" max="1000" value="500">
+      <button id="sec-flip">Flip</button>
+    </div>
+    <div id="mate-pop" hidden></div>
+    <div id="hover-tip" hidden></div>
+  </main>
+
+  <aside id="right">
+    <div id="inspector"></div>
+  </aside>
+
+  <footer id="status">
+    <span id="status-text">Ready.</span>
+    <span id="progress" hidden><span id="progress-bar"></span></span>
+    <span class="spacer"></span>
+    <span id="status-right" class="muted"></span>
+  </footer>
+</div>
+
+<div id="modal" hidden><div class="modal-card"><div id="modal-body"></div><div class="modal-actions"><button id="modal-close">Close</button></div></div></div>
+<input id="file-input" type="file" multiple accept=".stl,.obj,.3mf,.zip,.json" hidden>
+<input id="folder-input" type="file" webkitdirectory multiple hidden>
+<!--SCRIPT-->
+</body>
+</html>
