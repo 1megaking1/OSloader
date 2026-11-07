@@ -269,6 +269,18 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
       break;
     }
   }
+  // a complete prismatic fit (rect/hex key in its socket) is very specific evidence
+  if (B.rects.length && mates.length > 1) {
+    const centredB = new Set(mates.filter((m) => m.type === 'centered').map((m) => +m.b.slice(1)));
+    const centres = [];
+    for (const rb of B.rects) {
+      if (!rb.pairs.every((pi) => centredB.has(pi))) continue;
+      const c = mPoint(T, rb.center);
+      if (centres.some((x) => dist(x, c) < 0.5)) continue;
+      centres.push(c);
+      score += rb.sides >= 6 ? 3 : 2;
+    }
+  }
   return { score, mates };
 }
 
@@ -457,6 +469,7 @@ function genRects(A, B, opt, push) {
   for (const rb of B.rects) {
     for (const ra of A.rects) {
       if (rb.concave === ra.concave) continue;
+      if (Math.abs((ra.angle ?? 90) - (rb.angle ?? 90)) > 3) continue;
       const hole = ra.concave ? ra : rb, peg = ra.concave ? rb : ra;
       const fits = (h1, h2, p1, p2) => {
         const c1 = h1 - p1, c2 = h2 - p2;
@@ -474,6 +487,8 @@ function genRects(A, B, opt, push) {
             const zA = norm(cross(xA, yA));
             const zB = norm(cross(rb.d1, rb.d2));
             const T0 = frameMap(ra.center, xA, zA, rb.center, rb.d1, zB);
+            // for non-perpendicular prisms B's second direction must land on A's
+            if (Math.abs(dot(norm(mDir(T0, rb.d2)), yA)) < Math.cos(rad(3))) continue;
             const ck = {
               cb: { a: rb.axis, c: rb.center, len: rb.len, t0: rb.t0, t1: rb.t1 },
               ca: { a: ra.axis, c: ra.center, len: ra.len, t0: ra.t0, t1: ra.t1 },

@@ -355,6 +355,10 @@ function rangeAlong(pl, d) {
   return [m - r, m + r];
 }
 
+/**
+ * Prismatic holes/pegs from two plane pairs whose normals are perpendicular
+ * to a common axis: rectangles (90 deg) and hexagons/octagons (60/45 deg).
+ */
 function findRects(planes, pairs) {
   const out = [];
   const perpTol = Math.sin(rad(2));
@@ -363,7 +367,11 @@ function findRects(planes, pairs) {
     for (let b = a + 1; b < pairs.length; b++) {
       const P2 = pairs[b];
       if (P1.concave !== P2.concave) continue;
-      if (Math.abs(dot(P1.n, P2.n)) > perpTol) continue;
+      const cd = dot(P1.n, P2.n);
+      if (Math.abs(cd) > Math.cos(rad(25))) continue;
+      const perpendicular = Math.abs(cd) <= perpTol;
+      const angle = (Math.acos(Math.min(1, Math.abs(cd))) * 180) / Math.PI;
+      if (!perpendicular && Math.min(Math.abs(angle - 60), Math.abs(angle - 45)) > 2.5) continue;
       const axis = norm(cross(P1.n, P2.n));
       // closure: walls of P1 span P2's width and are centred on P2's mid plane
       const ok = (Pa, Pb) => {
@@ -382,7 +390,14 @@ function findRects(planes, pairs) {
         }
         return true;
       };
-      if (!ok(P1, P2) || !ok(P2, P1)) continue;
+      if (perpendicular) {
+        if (!ok(P1, P2) || !ok(P2, P1)) continue;
+      } else {
+        // polygonal: both pairs must be centred on each other's mid plane
+        const off1 = Math.abs(dot(sub(P1.mid, P2.mid), P2.n)), off2 = Math.abs(dot(sub(P2.mid, P1.mid), P1.n));
+        if (off1 > 0.2 * P2.width + 0.2 || off2 > 0.2 * P1.width + 0.2) continue;
+        if (Math.abs(P1.width - P2.width) > 0.15 * Math.max(P1.width, P2.width)) continue;
+      }
       // axial overlap of all 4 walls
       let t0 = -Infinity, t1 = Infinity;
       for (const pid of [P1.i, P1.j, P2.i, P2.j]) {
@@ -396,12 +411,15 @@ function findRects(planes, pairs) {
       const tc = (t0 + t1) / 2;
       const center = add(c, scale(axis, tc - dot(c, axis)));
       const w1 = P1.width, w2 = P2.width;
+      const d2 = cd < 0 ? scale(P2.n, -1) : P2.n;
       out.push({
         id: out.length,
-        axis,
+        axis: norm(cross(P1.n, d2)),
         center,
         d1: P1.n,
-        d2: P2.n,
+        d2,
+        angle: perpendicular ? 90 : angle,
+        sides: perpendicular ? 4 : Math.abs(angle - 60) < 3 ? 6 : 8,
         w1,
         w2,
         t0: t0 - tc,

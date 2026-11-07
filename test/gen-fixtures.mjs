@@ -154,6 +154,11 @@ function splitPropKit() {
   let scope = cyl(50, 7, 36).rotate([0, 90, 0]).translate([-40, 6.15, 52]);
   scope = scope.add(cube([20, 8, 7], false).translate([-24, 2.15, 40]));
   scope = scope.add(cube([8, 4, 2.5], false).translate([-19.85, 4.15, 38]));
+  // hex socket in the rear face of the left half + hex plug with a round cap
+  const hexR = (af) => af / Math.sqrt(3);
+  L = L.subtract(cyl(6.01, hexR(6.3), 6).rotate([0, 90, 0]).translate([-55.01, 7, 12]));
+  let plug = cyl(5.8, hexR(6.0), 6).rotate([0, 90, 0]).translate([-55 + 0.0, 7, 12]);
+  plug = plug.add(cyl(2.5, 5, 40).rotate([0, 90, 0]).translate([-57.5, 7, 12]));
   // pin: Ø3.0 x 11.6
   const pin = cyl(11.6, 1.5, 12, true).rotate([90, 0, 0]).translate([pins[0][0], 0, pins[0][1]]);
   const pinInst = pins.slice(1).map(([x, z]) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x - pins[0][0], 0, z - pins[0][1], 1]);
@@ -163,6 +168,7 @@ function splitPropKit() {
     { file: 'barrel_tip.stl', m: tip },
     { file: 'scope.stl', m: scope, note: 'pocket is symmetric: 180 deg flip is ambiguous', symmetricAlt: true },
     { file: 'alignment_pin_x4.stl', m: pin, instances: pinInst },
+    { file: 'hex_plug.stl', m: plug, note: 'hex key in hex socket (6-fold symmetric)' },
   ];
 }
 

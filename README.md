@@ -39,7 +39,7 @@ Every part is segmented into surfaces, and these features are detected:
 | **Cylinders**: bores/holes (concave) and pegs/bosses/pins (convex), including partial and D-shaped bores and split half-bores | two bores ↔ two pegs; peg in hole; screw holes lining up across parts (coaxial even across a gap); single bore + rotation search |
 | **Flat faces** with their exact outlines | face contact; split parts glued along a cut (the outlines are matched with 2D ICP); lids sitting on floors |
 | **Plane pairs**: slots (facing walls) and tabs/ribs/plate thickness (back-to-back walls) | tab centred in a slot with an **even gap** on both sides |
-| **Rectangular holes and pegs** (two perpendicular slots or tabs) | rect key in rect hole, at all valid 90°/180° orientations |
+| **Prismatic holes and pegs**: rectangles (two perpendicular slots or tabs), hexagons and octagons | rect or hex key in its socket, at all valid orientations; a complete prism fit counts as strong evidence |
 
 For each pair of parts, the matcher generates candidate poses from these correspondences. Any freedom that remains, such as sliding along a pin or turning about a single bore, is resolved by face contacts, slot centring and an angle sweep. Each pose is then scored:
 
@@ -124,4 +124,4 @@ src/app/    browser UI (three.js viewer, worker pool, panels, I/O)
 test/       synthetic kits with ground truth, accuracy and browser tests
 ```
 
-`test/run-tests.mjs` reassembles three synthetic kits (21 files, 27 placed parts including copies) from random lay-flat orientations and compares every pose with ground truth. Parts that are genuinely ambiguous (symmetric keys, a pin that fits two hole types) pass when the correct pose is among the options offered.
+`test/run-tests.mjs` reassembles three synthetic kits (22 files, 28 placements including copies) from random lay-flat orientations and compares every pose with ground truth. Parts that are genuinely ambiguous (symmetric keys, a pin that fits two hole types) pass when the correct pose is among the options offered.

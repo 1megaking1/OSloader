@@ -235,8 +235,11 @@ export function inferMates(ctx, bid, W, neighbourIds, opt = DEFAULTS) {
         const off = sub(cb, ra.center);
         const perp = sub(off, scale(ra.axis, dot(off, ra.axis)));
         if (len(perp) > 0.3) continue;
-        const d1 = norm(mDir(T, rb.d1));
+        if (Math.abs((ra.angle ?? 90) - (rb.angle ?? 90)) > 3) continue;
+        const d1 = norm(mDir(T, rb.d1)), d2 = norm(mDir(T, rb.d2));
         const swap = Math.abs(dot(d1, ra.d1)) < Math.abs(dot(d1, ra.d2));
+        const cA = Math.cos(rad(3));
+        if (Math.abs(dot(d1, swap ? ra.d2 : ra.d1)) < cA || Math.abs(dot(d2, swap ? ra.d1 : ra.d2)) < cA) continue;
         const hole = ra.concave ? ra : rb, peg = ra.concave ? rb : ra;
         const [pw1, pw2] = swap ? [peg.w2, peg.w1] : [peg.w1, peg.w2];
         if (hole.w1 - pw1 < -0.15 || hole.w1 - pw1 > 1.2 || hole.w2 - pw2 < -0.15 || hole.w2 - pw2 > 1.2) continue;

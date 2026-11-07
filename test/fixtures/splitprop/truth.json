@@ -193,6 +193,34 @@
    "freeAxis": null,
    "symmetricAlt": false,
    "expectUnplaced": false
+  },
+  "hex_plug.stl": {
+   "poses": [
+    [
+     -0.8037169002959509,
+     -0.2600305148622075,
+     0.5351852721433615,
+     0,
+     -0.48816404028261673,
+     0.8024284285543896,
+     -0.34322658233692405,
+     0,
+     -0.34019849199198454,
+     -0.5371152096042606,
+     -0.7718628360389889,
+     0,
+     577.0726225765421,
+     169.5826721130485,
+     -373.3461558745753,
+     1
+    ]
+   ],
+   "role": "part",
+   "versionOf": null,
+   "note": "hex key in hex socket (6-fold symmetric)",
+   "freeAxis": null,
+   "symmetricAlt": false,
+   "expectUnplaced": false
   }
  }
 }
