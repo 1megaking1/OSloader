@@ -5,6 +5,7 @@
 import { buildMesh, principalAxes } from './mesh.js';
 import { segmentPlanar, patchGraph, detectCylinders, detectCylindersTri } from './segment.js';
 import { computeSDF } from './sdf.js';
+import { findLoopHoles } from './loops.js';
 import { dot, cross, norm, sub, add, scale, rad, rng } from './math.js';
 
 const MASK = 48; // plane occupancy raster resolution
@@ -27,14 +28,53 @@ export function analyzePart(positions, opts = {}) {
     const pl = planeFeature(mesh, p, seg.triPatch, rngFor(p.id));
     if (!pl) continue;
     pl.id = planes.length;
+    pl.patch = p.id;
     patchPlane[p.id] = pl.id;
     planes.push(pl);
   }
+
+  // holes / bosses from circular loops of flat faces (robust to any wall tessellation, cones)
+  const triLoop = new Int32Array(mesh.T).fill(-1);
+  if (opts.loopHoles !== false) {
+    for (const f of findLoopHoles(mesh, seg, patchPlane, planes)) {
+      const dup = cyls.find((g) => {
+        if (g.concave !== f.concave || Math.abs(dot(g.a, f.a)) < Math.cos(rad(2))) return false;
+        const rel = sub(f.c, g.c);
+        const off = Math.hypot(...sub(rel, scale(g.a, dot(rel, g.a))));
+        if (off > 0.1 + 0.05 * g.r || Math.abs(f.r - g.r) > 0.15 + 0.12 * g.r) return false;
+        const tf = dot(rel, g.a);
+        return tf - f.len / 2 <= g.t1 + 0.3 && tf + f.len / 2 >= g.t0 - 0.3;
+      });
+      if (dup) {
+        // the strip fit is more precise; the loop proves the bore goes all the way round
+        if (!dup.full) {
+          dup.full = true;
+          dup.span = 2 * Math.PI;
+        }
+        if (f.cone) Object.assign(dup, { cone: f.cone, rTop: f.rTop, rBottom: f.rBottom });
+        dup.loop = true;
+        for (const t of f.wallTris) if (triLoop[t] < 0) triLoop[t] = dup.id;
+        continue;
+      }
+      f.id = cyls.length;
+      f.u = norm(cross(f.a, Math.abs(f.a[0]) < 0.6 ? [1, 0, 0] : [0, 1, 0]));
+      f.v = cross(f.a, f.u);
+      f.arcMid = 0;
+      for (const t of f.wallTris) triLoop[t] = f.id;
+      delete f.wallTris;
+      cyls.push(f);
+    }
+  }
+  for (const c of cyls) delete c.wallTris;
 
   // cylinder end planes (caps / shoulders) for axial reasoning
   for (const c of cyls) {
     c.ends = [];
     const seen = new Set();
+    if (c.src === 'loop') {
+      c.ends.push({ plane: c.facePlane, side: -1, nDotA: dot(planes[c.facePlane].n, c.a) });
+      continue;
+    }
     for (const pid of c.patches) {
       for (const [nb] of graph[pid]) {
         const pl = patchPlane[nb];
@@ -69,11 +109,20 @@ export function analyzePart(positions, opts = {}) {
     const pid = seg.triPatch[t];
     const o = mesh.triOrig[t];
     if (inCyl[pid] >= 0) triCyl[o] = inCyl[pid];
+    else if (triLoop[t] >= 0) triCyl[o] = triLoop[t];
     else if (patchPlane[pid] >= 0) triPlane[o] = patchPlane[pid];
   }
 
   // strip internal arrays from cylinders
   for (const c of cyls) delete c.patches;
+
+  // how much of the flat area faces exactly along the file's X/Y/Z axes
+  let alignedArea = 0, planeArea = 0;
+  for (const p of planes) {
+    planeArea += p.area;
+    if (Math.max(Math.abs(p.n[0]), Math.abs(p.n[1]), Math.abs(p.n[2])) > Math.cos(rad(0.5))) alignedArea += p.area;
+  }
+  const alignedness = planeArea > 0 ? alignedArea / mesh.area : 0;
 
   const holes = cyls.filter((c) => c.concave && c.span > rad(200)).length;
   const pegs = cyls.filter((c) => !c.concave && c.span > rad(200)).length;
@@ -108,6 +157,7 @@ export function analyzePart(positions, opts = {}) {
       pegs,
       planes: planes.length,
     },
+    alignedness,
   };
 }
 
@@ -367,6 +417,7 @@ function findRects(planes, pairs) {
     for (let b = a + 1; b < pairs.length; b++) {
       const P2 = pairs[b];
       if (P1.concave !== P2.concave) continue;
+      if (P1.area < 1 || P2.area < 1) continue;
       const cd = dot(P1.n, P2.n);
       if (Math.abs(cd) > Math.cos(rad(25))) continue;
       const perpendicular = Math.abs(cd) <= perpTol;
@@ -428,9 +479,16 @@ function findRects(planes, pairs) {
         concave: P1.concave,
         pairs: [P1.id, P2.id],
         square: Math.abs(w1 - w2) < 0.03 * Math.max(w1, w2),
+        quality: Math.min(P1.area, P2.area) * (t1 - t0),
       });
     }
   }
+  // keep the most substantial prisms (knurled or faceted parts can produce thousands)
+  if (out.length > 40) {
+    out.sort((a, b) => b.quality - a.quality);
+    out.length = 40;
+  }
+  out.forEach((r, i) => (r.id = i));
   return out;
 }
 

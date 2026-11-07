@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS = {
   autoAssembleOnLoad: true,
   autoInstances: true,
   squareToGrid: true,
+  axisAligned: 'auto',
   contactTol: 0.45,
   maxClearance: 0.8,
   slotClearance: 1.2,
@@ -390,8 +391,8 @@ export class App {
       }
       const groups = await this.hub.versions(ids);
       const members = new Set(groups.flatMap((g) => g.members.filter((m) => m !== g.rep)));
-      const nodes = ready.filter((p) => !members.has(p.id)).map((p) => ({ id: p.id, name: p.name, area: p.an.stats.area }));
-      const all = planPairs(nodes);
+      const nodes = ready.filter((p) => !members.has(p.id)).map((p) => ({ id: p.id, name: p.name, area: p.an.stats.area, alignedness: p.an.alignedness }));
+      const all = planPairs(nodes, this.settings.axisAligned || 'auto');
       const todo = all.filter((t) => !this.hypCache.has(t.key));
       if (todo.length) {
         this.status(`Matching ${todo.length} part pairs on ${this.hub.size} threads…`);
@@ -405,7 +406,7 @@ export class App {
       this.status('Placing parts…');
       res = await this.hub.assemble(
         ids,
-        { fixed: Object.keys(fixed).length ? fixed : null, autoInstances: this.settings.autoInstances, match, groups },
+        { fixed: Object.keys(fixed).length ? fixed : null, autoInstances: this.settings.autoInstances, match, groups, axisAligned: this.settings.axisAligned || 'auto' },
         (pr) => {
           if (pr.stage === 'matching') {
             this.progress(pr.done / pr.total);
@@ -424,7 +425,11 @@ export class App {
     $('#btn-auto').disabled = false;
     this.progress(null);
     this.applyAssembly(res);
-    if (this.settings.squareToGrid && !Object.keys(fixed).length) this.squareToGrid(false);
+    if (!Object.keys(fixed).length) {
+      // axis-aligned kits keep the CAD frame of the base part (already square); others get squared up
+      if (res.kitAligned) this.dropToBed(false);
+      else if (this.settings.squareToGrid) this.squareToGrid(false);
+    }
     const ms = Math.round(performance.now() - t0);
     const c = this.counts();
     this.status(`Auto-assembled in ${(ms / 1000).toFixed(1)} s: ${c.placed} placed, ${c.ambiguous} to review, ${c.unplaced} not placed${c.version ? `, ${c.version} versions stacked` : ''}.`);
@@ -752,7 +757,7 @@ export class App {
     this.status(`Searching placements for ${p.name}…`);
     const poses = this.placedPoses(id);
     if (!Object.keys(poses).length) return this.status('Nothing placed yet – run Auto-assemble or set a base part first.');
-    const sug = await this.hub.suggest(id, poses, { match: this.matchOptions() });
+    const sug = await this.hub.suggest(id, poses, { match: this.matchOptions(), axisAligned: this.settings.axisAligned || 'auto' });
     if (!sug.length) {
       this.status(`No mating features found for ${p.name}. Use Mate (M) to place it manually, or move it with the gizmo (G/T).`);
       return;
@@ -1384,6 +1389,8 @@ export class App {
       ${chk('autoAssembleOnLoad', 'Auto-assemble after loading', 'Run the solver as soon as all dropped parts are analysed.')}
       ${chk('autoInstances', 'Copies from file names', 'Files named like <i>pin_x4.stl</i> or <i>foot (4x).stl</i> are placed 4 times.')}
       ${chk('squareToGrid', 'Square assembly to the grid', 'After auto-assembly, rotate everything so the main flat faces align with X/Y/Z and the biggest face sits on the bed.')}
+      <div class="setting"><label>Axis-aligned parts<small>Kits exported from one CAD assembly share X/Y/Z: only allow 90° rotations between parts. <i>Auto</i> detects this from the flat faces.</small></label>
+        <select data-k="axisAligned"><option value="auto" ${s.axisAligned === 'auto' ? 'selected' : ''}>Auto</option><option value="on" ${s.axisAligned === 'on' ? 'selected' : ''}>Always</option><option value="off" ${s.axisAligned === 'off' ? 'selected' : ''}>Never</option></select></div>
       <h3>Fit tolerances (mm)</h3>
       ${row('contactTol', 'Contact distance', 'Surfaces closer than this count as touching. Should exceed your print clearance.')}
       ${row('maxClearance', 'Max peg/hole clearance', 'Largest radial gap for a peg to be considered fitting a hole.')}
@@ -1393,7 +1400,7 @@ export class App {
       <div class="btnrow"><button id="set-reset">Reset defaults</button> <button id="set-theme">Toggle light/dark</button></div>
       <p class="hint">Changing tolerances re-runs matching on the next Auto-assemble.</p>`);
     const save = () => {
-      for (const el of document.querySelectorAll('#modal-body [data-k]')) s[el.dataset.k] = el.type === 'checkbox' ? el.checked : +el.value;
+      for (const el of document.querySelectorAll('#modal-body [data-k]')) s[el.dataset.k] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : +el.value;
       try {
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
       } catch {

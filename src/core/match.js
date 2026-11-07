@@ -8,8 +8,9 @@
 import {
   add, sub, scale, dot, cross, norm, len, dist, rad, deg,
   mMul, mInvRigid, mPoint, mDir, mFromBasis, mAxisAngle, mTranslation, mIdentity, mRotAngle,
-  reject, kabsch, eigSym3,
+  reject, kabsch, eigSym3, CUBE_ROTS, nearestCube, withRotation,
 } from './math.js';
+import { planeOverlap, planeContains } from './features.js';
 import { sdfSample, sdfSampleGrad } from './sdf.js';
 
 export const DEFAULTS = {
@@ -19,8 +20,9 @@ export const DEFAULTS = {
   maxPress: 0.15, // mm: max interference for press fits
   slotClearance: 1.2, // mm: max total clearance tab-in-slot
   angTol: 2, // degrees
-  stackGap: 6, // mm: max axial gap between two coaxial bores (screw through both)
+  stackGap: 5, // mm: max axial gap between two coaxial bores (screw through both)
   penWeight: 8,
+  collisionPenalty: 0.03,
   featWeight: 0.1,
   flatWeight: 0.5, // weight of contact along the single dominant normal direction
 };
@@ -137,7 +139,10 @@ export function evalPose(A, B, T, opt = DEFAULTS, stride = 1) {
   const contactArea = raw > 0 ? weighted * (raw / Math.max(1e-9, lam[0] + lam[1] + lam[2])) : 0;
   const contact = contactArea / base;
   const pen = Math.max(pA, pB) / base;
-  return { contact, pen, contactArea, rawContact: raw / base, penArea: Math.max(pA, pB), score: contact - opt.penWeight * pen };
+  const penArea = Math.max(pA, pB);
+  // any real collision is worse than none at all (assemblies should not intersect)
+  const collide = penArea > Math.max(1, 0.0005 * base) ? opt.collisionPenalty : 0;
+  return { contact, pen, contactArea, rawContact: raw / base, penArea, score: contact - opt.penWeight * pen - collide };
 }
 
 // ------------------------------------------------------------ utilities
@@ -169,6 +174,12 @@ function boxIn(B, T, pad) {
   }
   return { lo, hi };
 }
+/** does point p (plane's frame) project inside the plane's occupied region? */
+function onPlane(pl, p) {
+  const rel = sub(p, pl.c);
+  return planeContains(pl, dot(rel, pl.u), dot(rel, pl.v));
+}
+
 const inBox = (b, p, r = 0) => p[0] >= b.lo[0] - r && p[0] <= b.hi[0] + r && p[1] >= b.lo[1] - r && p[1] <= b.hi[1] + r && p[2] >= b.lo[2] - r && p[2] <= b.hi[2] + r;
 
 /** Can B's cylinder sit coaxially with A's cylinder? returns kind or null */
@@ -236,7 +247,7 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
       const ov = axialOverlap(w, ca);
       if (kind === 'insert' && ov < Math.min(0.5, 0.3 * Math.min(cb.len, ca.len))) continue;
       if (kind === 'stack' && (ov < -opt.stackGap || ov > 0.3 * Math.min(cb.len, ca.len))) continue;
-      const wgt = kind === 'insert' ? 3 * clearanceWeight(Math.abs(ca.r - cb.r)) : 1.5 * Math.exp(-Math.max(0, -ov) / 4);
+      const wgt = kind === 'insert' ? 3 * clearanceWeight(Math.abs(ca.r - cb.r)) : 1.5 * Math.exp(-Math.max(0, -ov) / 2.5);
       if (!best || wgt - d > best.wgt - best.d) best = { ca, d, kind, wgt };
     }
     if (best) {
@@ -246,6 +257,7 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
     }
   }
   // tab / slot centring
+  const Ti = mInvRigid(T);
   const pairsA = A.pairs.filter((pa) => inBox(bbox, pa.mid, Math.sqrt(A.planes[pa.i].area) + pa.width));
   for (const pb of B.pairs) {
     const nb = norm(mDir(T, pb.n));
@@ -258,10 +270,9 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
       if (cl < -opt.maxPress || cl > opt.slotClearance) continue;
       const off = Math.abs(dot(sub(mb, pa.mid), pa.n));
       if (off > Math.max(0.3, cl / 2 + 0.1)) continue;
-      // in-plane proximity: tab's mid point should lie within the slot region roughly
-      const inPlane = len(reject(sub(mb, pa.mid), pa.n));
-      const reach = Math.sqrt(Math.max(A.planes[pa.i].area, B.planes[pb.i].area)) * 1.2 + 2;
-      if (inPlane > reach) continue;
+      // the tab must actually sit between the slot walls (sampled in-plane overlap, either way round)
+      const wa = A.planes[pa.i], wb = B.planes[pb.i];
+      if (planeOverlap(wa, wb, T).frac < 0.2 && planeOverlap(wb, wa, Ti).frac < 0.2) continue;
       if (usedA.has('s' + pa.id)) continue;
       usedA.add('s' + pa.id);
       mates.push({ type: 'centered', a: 's' + pa.id, b: 's' + pb.id, err: off, clearance: cl });
@@ -269,6 +280,8 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
       break;
     }
   }
+  // same-shaped flat faces pressed together
+  score += faceOutlineScore(A, B, T, bbox).score;
   // a complete prismatic fit (rect/hex key in its socket) is very specific evidence
   if (B.rects.length && mates.length > 1) {
     const centredB = new Set(mates.filter((m) => m.type === 'centered').map((m) => +m.b.slice(1)));
@@ -460,7 +473,7 @@ function genCylPairs(A, B, opt, push) {
       { cb: c.q.b, ca: c.p.b, kind: c.k2 },
     ];
     for (const sh of axialShifts(A, B, c.T0, c.zA, checks, opt).sort((x, y) => y.w - x.w).slice(0, 24)) {
-      push(shiftT(c.T0, c.zA, sh.s), 'bore-pair', { shift: sh.kind, support: c.sup });
+      push(shiftT(c.T0, c.zA, sh.s), 'bore-pair', { shift: sh.kind, support: c.sup, anchor: c.q.a.c });
     }
   }
 }
@@ -494,7 +507,7 @@ function genRects(A, B, opt, push) {
               ca: { a: ra.axis, c: ra.center, len: ra.len, t0: ra.t0, t1: ra.t1 },
               kind: 'insert',
             };
-            for (const sh of axialShifts(A, B, T0, zA, [ck], opt)) push(shiftT(T0, zA, sh.s), 'rect', { shift: sh.kind });
+            for (const sh of axialShifts(A, B, T0, zA, [ck], opt)) push(shiftT(T0, zA, sh.s), 'rect', { shift: sh.kind, anchor: rb.center });
           }
         }
       }
@@ -617,7 +630,7 @@ function genFaces(A, B, opt, push) {
         // face-2D map: (x,y,z) -> (c x - s(-y) + tx, s x + c(-y) + ty, -z)
         const M = [c, s, 0, 0, s, -c, 0, 0, 0, 0, -1, 0, r.tx, r.ty, 0, 1];
         const T = mMul(FA, mMul(M, mInvRigid(FB)));
-        push(T, 'face', { rms: r.rms, faceA: pa.id, faceB: pb.id });
+        push(T, 'face', { rms: r.rms, faceA: pa.id, faceB: pb.id, anchor: pb.c });
       }
     }
   }
@@ -692,10 +705,194 @@ function genSingleCyl(A, B, opt, push) {
         // cheap prescreen to cap the count for this correspondence
         for (const l of local) l.q = evalPose(A, B, l.T, opt, 12).score + shiftPrior(l.sh);
         local.sort((x, y) => y.q - x.q);
-        for (const l of local.slice(0, 8)) push(l.T, 'bore+angle', { angle: l.ad, shift: l.sh, free: 'angle' });
+        for (const l of local.slice(0, 8)) push(l.T, 'bore+angle', { angle: l.ad, shift: l.sh, free: 'angle', anchor: b.c });
       }
     }
   }
+}
+
+// ------------------------------------------------------ axis-aligned kits
+
+/** 2D ICP over translation only (rotation already fixed). S, D interleaved. */
+function icp2dTrans(S, D, iters = 8) {
+  const ns = S.length / 2, nd = D.length / 2;
+  let sx = 0, sy = 0, dx = 0, dy = 0;
+  for (let i = 0; i < ns; i++) {
+    sx += S[2 * i];
+    sy += S[2 * i + 1];
+  }
+  for (let i = 0; i < nd; i++) {
+    dx += D[2 * i];
+    dy += D[2 * i + 1];
+  }
+  let tx = dx / nd - sx / ns, ty = dy / nd - sy / ns;
+  let rms = Infinity, inl = 0;
+  const dd = new Float64Array(ns), qx = new Float64Array(ns), qy = new Float64Array(ns);
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < ns; i++) {
+      const x = S[2 * i] + tx, y = S[2 * i + 1] + ty;
+      let best = Infinity, bx = 0, by = 0;
+      for (let j = 0; j < nd; j++) {
+        const ex = D[2 * j] - x, ey = D[2 * j + 1] - y;
+        const e = ex * ex + ey * ey;
+        if (e < best) {
+          best = e;
+          bx = D[2 * j];
+          by = D[2 * j + 1];
+        }
+      }
+      dd[i] = best;
+      qx[i] = bx - S[2 * i];
+      qy[i] = by - S[2 * i + 1];
+    }
+    const sorted = Array.from(dd).sort((a, b) => a - b);
+    const cut = sorted[Math.floor(ns * 0.8)] + 1e-12;
+    let mx = 0, my = 0, w = 0, ss = 0;
+    inl = 0;
+    for (let i = 0; i < ns; i++) {
+      if (dd[i] < 0.25) inl++;
+      if (dd[i] > cut) continue;
+      mx += qx[i];
+      my += qy[i];
+      ss += dd[i];
+      w++;
+    }
+    tx = mx / w;
+    ty = my / w;
+    rms = Math.sqrt(ss / w);
+  }
+  return { tx, ty, rms, inl: inl / ns };
+}
+
+function subsample(arr, maxPts) {
+  const n = arr.length / 2;
+  if (n <= maxPts) return arr;
+  const out = new Float64Array(maxPts * 2);
+  const step = n / maxPts;
+  for (let i = 0; i < maxPts; i++) {
+    const k = Math.floor(i * step);
+    out[2 * i] = arr[2 * k];
+    out[2 * i + 1] = arr[2 * k + 1];
+  }
+  return out;
+}
+
+/**
+ * Hypotheses for parts whose files share Cartesian axes: only the 24
+ * axis-aligned relative rotations are allowed, so the search is over
+ * translations driven by bore correspondences and same-shape faces.
+ */
+function genCube(A, B, opt, push) {
+  const cosT = Math.cos(rad(1));
+  const ua = usableCyls(A);
+  const ub = usableCyls(B).slice().sort((x, y) => y.r * y.len - x.r * x.len).slice(0, 16);
+  // 1. bores / pegs
+  const corr = [];
+  for (const C of CUBE_ROTS) {
+    for (const b of ub) {
+      const ab = mDir(C, b.a), cb = mDir(C, b.c);
+      for (const a of ua) {
+        if (Math.abs(dot(ab, a.a)) < cosT) continue;
+        const kind = cylCompat(b, a, opt);
+        if (!kind) continue;
+        const rel = sub(a.c, cb);
+        const t = sub(rel, scale(a.a, dot(rel, a.a)));
+        const T0 = C.slice();
+        T0[12] = t[0];
+        T0[13] = t[1];
+        T0[14] = t[2];
+        corr.push({ T0, ax: a.a, a, b, kind, sup: cylSupport(A, B, T0, opt) });
+      }
+    }
+  }
+  corr.sort((x, y) => y.sup - x.sup);
+  const best = corr.length ? corr[0].sup : 0;
+  const seen = new Set();
+  let kept = 0;
+  for (const c of corr) {
+    if (kept >= 120 || (kept >= 40 && c.sup < best - 1)) break;
+    const key = [mPoint(c.T0, B.stats.centroid).map((v) => Math.round(v * 20)).join(','), c.T0.slice(0, 11).map((v) => Math.round(v)).join(',')].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept++;
+    const shifts = axialShifts(A, B, c.T0, c.ax, [{ cb: c.b, ca: c.a, kind: c.kind }], opt).sort((x, y) => y.w - x.w).slice(0, 16);
+    for (const sh of shifts) push(shiftT(c.T0, c.ax, sh.s), 'aligned bores', { shift: sh.kind, support: c.sup, cube: true });
+  }
+  // 2. same-shape flat faces pressed together (grip scale in its pocket, split halves, lids)
+  const fb = B.planes
+    .filter((p) => p.area >= Math.max(15, 0.015 * B.stats.area))
+    .sort((x, y) => y.area - x.area)
+    .slice(0, 10);
+  for (const pb of fb) {
+    const bAniso = pb.m1 / Math.max(1e-9, pb.m2);
+    for (const pa of A.planes) {
+      const ar = pb.area / pa.area;
+      if (ar < 0.55 || ar > 1.8) continue;
+      const pr = pb.perim / pa.perim;
+      if (pr < 0.6 || pr > 1.65) continue;
+      const g1 = Math.sqrt(pb.m1 / pa.m1), g2 = Math.sqrt((pb.m2 + 1e-9) / (pa.m2 + 1e-9));
+      if (g1 < 0.75 || g1 > 1.33 || g2 < 0.7 || g2 > 1.4) continue;
+      for (const C of CUBE_ROTS) {
+        if (dot(mDir(C, pb.n), pa.n) > -cosT) continue;
+        // principal directions must agree unless the face is nearly isotropic
+        if (bAniso > 1.25 && Math.abs(dot(mDir(C, pb.u), pa.u)) < 0.9) continue;
+        // B boundary mapped into A's 2D frame (rotation only), then translation-only ICP
+        const nb = pb.boundary.length / 2;
+        const S = new Float64Array(nb * 2);
+        const cB = mDir(C, pb.c);
+        for (let i = 0; i < nb; i++) {
+          const p3 = add(cB, mDir(C, add(scale(pb.u, pb.boundary[2 * i]), scale(pb.v, pb.boundary[2 * i + 1]))));
+          const rel = sub(p3, pa.c);
+          S[2 * i] = dot(rel, pa.u);
+          S[2 * i + 1] = dot(rel, pa.v);
+        }
+        const r = icp2dTrans(subsample(S, 90), pa.boundary, 8);
+        const tol = 0.5 + 0.012 * Math.sqrt(pa.area);
+        if (r.rms > tol || r.inl < 0.45) continue;
+        // B's face pressed onto A's plane, shifted in-plane by the ICP result
+        const base = sub(pa.c, cB);
+        const off = dot(base, pa.n);
+        const t = add(scale(pa.n, off), add(scale(pa.u, r.tx), scale(pa.v, r.ty)));
+        const T = C.slice();
+        T[12] = t[0];
+        T[13] = t[1];
+        T[14] = t[2];
+        push(T, 'matching faces', { rms: r.rms, faceA: pa.id, faceB: pb.id, cube: true });
+      }
+    }
+  }
+}
+
+/** Big flat faces of B that land on an A face with the same outline (flat-to-flat evidence). */
+function faceOutlineScore(A, B, T, bbox) {
+  const fb = cache(B, 'bigfaces', () =>
+    B.planes
+      .filter((p) => p.area >= Math.max(15, 0.015 * B.stats.area))
+      .sort((x, y) => y.area - x.area)
+      .slice(0, 12),
+  );
+  if (!fb.length) return { score: 0, mates: [] };
+  const cosT = Math.cos(rad(2));
+  const Ti = mInvRigid(T);
+  let score = 0;
+  const mates = [];
+  for (const pb of fb) {
+    const n = norm(mDir(T, pb.n)), c = mPoint(T, pb.c);
+    for (const pa of A.planes) {
+      if (pa.area < 0.5 * pb.area || pa.area > 2 * pb.area) continue;
+      if (dot(n, pa.n) > -cosT) continue;
+      if (Math.abs(dot(sub(c, pa.c), pa.n)) > 0.35) continue;
+      if (!inBox(bbox, pa.c, Math.sqrt(pa.area))) continue;
+      const o1 = planeOverlap(pa, pb, T).frac;
+      if (o1 < 0.75) continue;
+      const o2 = planeOverlap(pb, pa, Ti).frac;
+      if (o2 < 0.75) continue;
+      score += 1 + Math.min(2, pb.area / 300);
+      mates.push({ type: 'contact', a: 'p' + pa.id, b: 'p' + pb.id, outline: true });
+      break;
+    }
+  }
+  return { score, mates };
 }
 
 // ------------------------------------------------------------- top level
@@ -712,9 +909,23 @@ export function pairHypotheses(A, B, opt0 = {}) {
   const nPairHyps = raw.length;
   genRects(A, B, opt, push);
   genFaces(A, B, opt, push);
-  // single bore + rotation sweep: for parts that cannot be located by two bores
-  const fullB = B.cyls.filter((c) => usableCyl(c) && c.full).length;
-  if (fullB < 2 || nPairHyps === 0 || opt.alwaysSweep) genSingleCyl(A, B, opt, push);
+  if (opt.cube) {
+    // axis-aligned kit: snap near-axis-aligned poses exactly, drop the rest, add translation search
+    const kept = [];
+    for (const h of raw) {
+      const { C, angle } = nearestCube(h.T);
+      if (angle > (opt.cubeTol ?? 4)) continue;
+      h.T = withRotation(h.T, C, (h.info && h.info.anchor) || B.stats.centroid);
+      kept.push(h);
+    }
+    raw.length = 0;
+    raw.push(...kept);
+    genCube(A, B, opt, push);
+  } else {
+    // single bore + rotation sweep: for parts that cannot be located by two bores
+    const fullB = B.cyls.filter((c) => usableCyl(c) && c.full).length;
+    if (fullB < 2 || nPairHyps === 0 || opt.alwaysSweep) genSingleCyl(A, B, opt, push);
+  }
   if (!raw.length) return [];
   // collapse identical poses produced by different correspondences
   {

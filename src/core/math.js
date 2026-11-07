@@ -378,3 +378,42 @@ export function poseDelta(m1, m2, pts) {
   for (const p of pts) d = Math.max(d, dist(mPoint(m1, p), mPoint(m2, p)));
   return d;
 }
+
+// ------------------------------------------------- axis-aligned rotations
+
+/** The 24 rotations that map coordinate axes onto coordinate axes. */
+export const CUBE_ROTS = (() => {
+  const out = [];
+  const axes = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  for (const x of axes) {
+    for (const y of axes) {
+      if (Math.abs(x[0] * y[0] + x[1] * y[1] + x[2] * y[2]) > 0.5) continue;
+      const z = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+      out.push([x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0, 0, 0, 0, 1]);
+    }
+  }
+  return out;
+})();
+
+/** Nearest axis-aligned rotation to the rotation part of M: {C, angle (deg)} */
+export function nearestCube(M) {
+  let best = null;
+  for (const C of CUBE_ROTS) {
+    // angle of C^T R
+    const tr = C[0] * M[0] + C[1] * M[1] + C[2] * M[2] + C[4] * M[4] + C[5] * M[5] + C[6] * M[6] + C[8] * M[8] + C[9] * M[9] + C[10] * M[10];
+    const ang = Math.acos(Math.max(-1, Math.min(1, (tr - 1) / 2)));
+    if (!best || ang < best.ang) best = { C, ang };
+  }
+  return { C: best.C, angle: (best.ang * 180) / Math.PI };
+}
+
+/** Replace the rotation of T by C while keeping the image of local point p fixed. */
+export function withRotation(T, C, p) {
+  const q = mPoint(T, p);
+  const out = C.slice();
+  const r = mDir(C, p);
+  out[12] = q[0] - r[0];
+  out[13] = q[1] - r[1];
+  out[14] = q[2] - r[2];
+  return out;
+}

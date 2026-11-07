@@ -127,10 +127,12 @@ export function groupVersions(parts, opt = {}) {
       const k = nameHint ? 2 : 1;
       const sa = A.signature, sb = B.signature;
       const vr = sb.volume / sa.volume, ar = sb.area / sa.area;
-      if (vr < 1 - 0.18 * k || vr > 1 / (1 - 0.18 * k)) continue;
-      if (ar < 1 - 0.18 * k || ar > 1 / (1 - 0.18 * k)) continue;
+      // without a name hint the shapes must be nearly identical (similar rails are not versions)
+      const vt = nameHint ? 0.36 : 0.1, dt = nameHint ? 0.16 : 0.03, da = nameHint ? 1.0 : 0.5;
+      if (vr < 1 - vt || vr > 1 / (1 - vt)) continue;
+      if (ar < 1 - vt || ar > 1 / (1 - vt)) continue;
       let ok = true;
-      for (let d = 0; d < 3; d++) if (Math.abs(sa.dims[d] - sb.dims[d]) > 0.08 * k * sa.dims[d] + 1.0) ok = false;
+      for (let d = 0; d < 3; d++) if (Math.abs(sa.dims[d] - sb.dims[d]) > dt * sa.dims[d] + da) ok = false;
       if (!ok) continue;
       const r = registerShapes(A, B);
       const diag = A.stats.diag;
@@ -166,6 +168,55 @@ export function groupVersions(parts, opt = {}) {
   return out;
 }
 
+/**
+ * Variants: alternative parts for the same spot that differ in shape, e.g.
+ * Back_Picatinny_V1 vs Back_Picatinny_Full_Length_V1. Recognised from names
+ * (all tokens of the shorter name appear in the longer) plus a matching
+ * cross-section (two of three bounding dimensions agree).
+ */
+export function groupVariants(parts, exclude = new Set()) {
+  const toks = (name) => baseName(name).split(' ').filter((t) => t.length > 1);
+  const n = parts.length;
+  const parent = parts.map((_, i) => i);
+  const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  for (let i = 0; i < n; i++) {
+    if (exclude.has(parts[i].id)) continue;
+    for (let j = i + 1; j < n; j++) {
+      if (exclude.has(parts[j].id)) continue;
+      const a = toks(parts[i].name), b = toks(parts[j].name);
+      if (!a.length || !b.length || a[0] !== b[0]) continue;
+      const [sh, lg] = a.length <= b.length ? [a, b] : [b, a];
+      if (sh.length < 2 && lg.length > 2) continue;
+      if (!sh.every((t) => lg.includes(t))) continue;
+      if (sideTokens(parts[i].name) !== sideTokens(parts[j].name)) continue;
+      const da = parts[i].an.signature.dims, db = parts[j].an.signature.dims;
+      let same = 0;
+      for (let d = 0; d < 3; d++) if (Math.abs(da[d] - db[d]) <= 0.1 * Math.max(da[d], db[d]) + 1) same++;
+      // compare unsorted-insensitive: any two dims matching
+      if (same < 2) {
+        const used = new Set();
+        same = 0;
+        for (const x of da) {
+          const k = db.findIndex((y, idx) => !used.has(idx) && Math.abs(x - y) <= 0.1 * Math.max(x, y) + 1);
+          if (k >= 0) {
+            used.add(k);
+            same++;
+          }
+        }
+      }
+      if (same < 2) continue;
+      parent[find(j)] = find(i);
+    }
+  }
+  const groups = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(parts[i].id);
+  }
+  return Array.from(groups.values()).filter((g) => g.length > 1);
+}
+
 // ------------------------------------------------------- world helpers
 
 function worldBox(an, P, pad = 0) {
@@ -195,7 +246,8 @@ function contribution(X, PX, B, W, opt) {
 
 function globalScore(B, acc, opt) {
   const a = B.stats.area;
-  return (acc.contactArea - opt.penWeight * acc.penArea) / a + opt.featWeight * acc.feat;
+  const collide = acc.penArea > Math.max(1, 0.0005 * a) ? opt.collisionPenalty : 0;
+  return (acc.contactArea - opt.penWeight * acc.penArea) / a + opt.featWeight * acc.feat - collide;
 }
 
 // --------------------------------------------------------- mate inference
@@ -298,16 +350,31 @@ export function snapPart(ctx, bid, mates, tol = 0.05) {
 
 export const pairKey = (a, b) => a + '\u0001' + b;
 
+const alignOf = (p) => (p.an ? p.an.alignedness : p.alignedness) || 0;
+
+/**
+ * Do the files of this kit share Cartesian axes (parts exported from one CAD
+ * assembly / laid flat square to the bed)? mode: 'auto' | 'on' | 'off'.
+ */
+export function kitIsAligned(nodes, mode = 'auto') {
+  if (mode === 'on') return true;
+  if (mode === 'off' || nodes.length < 2) return false;
+  const aligned = nodes.filter((p) => alignOf(p) >= 0.25).length;
+  return aligned >= Math.max(2, 0.5 * nodes.length);
+}
+
 /** Pairs of parts to match: fixed = larger surface area. */
-export function planPairs(nodes) {
+export function planPairs(nodes, mode = 'auto') {
   const out = [];
+  const kit = kitIsAligned(nodes, mode);
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
       const a = nodes[i], b = nodes[j];
       const area = (p) => (p.an ? p.an.stats.area : p.area);
       const [fixed, moving] = area(a) >= area(b) ? [a, b] : [b, a];
       const qty = Math.max(quantityFromName(moving.name), quantityFromName(fixed.name));
-      out.push({ key: pairKey(fixed.id, moving.id), fixed: fixed.id, moving: moving.id, keep: qty > 1 ? 16 + qty * 2 : 10 });
+      const cube = kit && (mode === 'on' || (alignOf(a) >= 0.1 && alignOf(b) >= 0.1));
+      out.push({ key: pairKey(fixed.id, moving.id) + (cube ? '|c' : ''), fixed: fixed.id, moving: moving.id, keep: qty > 1 ? 16 + qty * 2 : 10, cube });
     }
   }
   return out;
@@ -316,7 +383,7 @@ export function planPairs(nodes) {
 export function computePair(byId, t, opt) {
   const A = byId.get(t.fixed)?.an, B = byId.get(t.moving)?.an;
   if (!A || !B) return [];
-  return pairHypotheses(A, B, { ...opt, keep: t.keep });
+  return pairHypotheses(A, B, { ...opt, keep: t.keep, cube: !!t.cube });
 }
 
 /**
@@ -335,6 +402,11 @@ export function autoAssemble(parts, opts = {}) {
   const memberOf = new Map();
   for (const g of groups) for (const m of g.members) if (m !== g.rep) memberOf.set(m, g);
   const nodes = parts.filter((p) => !memberOf.has(p.id) && !(opts.exclude || []).includes(p.id));
+  // variants (different-shaped alternatives for one spot) are placed independently and may overlap
+  const variants = opts.variants ?? groupVariants(nodes);
+  const variantOf = new Map();
+  variants.forEach((g, gi) => g.forEach((id) => variantOf.set(id, gi)));
+  const sameVariant = (a, b) => variantOf.has(baseOf(a)) && variantOf.get(baseOf(a)) === variantOf.get(baseOf(b));
 
   // 2. root (or the user's locked parts)
   const fixed = opts.fixed ? new Map(Object.entries(opts.fixed).filter(([id]) => byId.has(id) && !memberOf.has(id))) : new Map();
@@ -342,18 +414,22 @@ export function autoAssemble(parts, opts = {}) {
 
   // 3. pairwise hypotheses (may be precomputed in parallel by the caller)
   const hyps = opts.hyps || new Map();
-  const tasks = planPairs(nodes).filter((t) => !hyps.has(t.key) && !hyps.has(pairKey(t.moving, t.fixed)));
+  const plan = planPairs(nodes, opts.axisAligned || 'auto');
+  const kitAligned = kitIsAligned(nodes, opts.axisAligned || 'auto');
+  const tasks = plan.filter((t) => !hyps.has(t.key));
   let done = 0;
   for (const t of tasks) {
     hyps.set(t.key, computePair(byId, t, opt));
     done++;
     if (done % 4 === 0) progress({ stage: 'matching', done, total: tasks.length });
   }
+  // pair lookup ignores the cube suffix of the cache key
+  const keyOf = new Map(plan.map((t) => [pairKey(t.fixed, t.moving), t.key]));
   /** hypotheses for B relative to A (T: B -> A local) */
   const relHyps = (aid, bid) => {
-    const h = hyps.get(pairKey(aid, bid));
+    const h = hyps.get(keyOf.get(pairKey(aid, bid)));
     if (h) return h;
-    const r = hyps.get(pairKey(bid, aid));
+    const r = hyps.get(keyOf.get(pairKey(bid, aid)));
     if (!r) return [];
     return r.map((x) => ({ ...x, T: mInvRigid(x.T), inverted: true }));
   };
@@ -363,7 +439,7 @@ export function autoAssemble(parts, opts = {}) {
   for (const p of parts) ctx.parts.set(p.id, { an: p.an, pose: mIdentity() });
   const placed = fixed.size ? new Map(fixed) : new Map([[root, mIdentity()]]);
   for (const [id, P] of placed) ctx.parts.get(id).pose = P;
-  const result = { root, placements: {}, groups, order: Array.from(placed.keys()), unplaced: [], instances: [], mates: [] };
+  const result = { root, placements: {}, groups: groups.slice(), order: Array.from(placed.keys()), unplaced: [], instances: [], mates: [] };
   for (const id of placed.keys()) result.placements[id] = { status: id === root ? 'root' : 'locked', score: 1, alternatives: [] };
 
   const cands = new Map(); // bid -> [{W, from, source, acc, score}]
@@ -385,6 +461,7 @@ export function autoAssemble(parts, opts = {}) {
     const box = worldBox(B, c.W, 1);
     const acc = { contactArea: 0, penArea: 0, feat: 0 };
     for (const [xid, PX] of placed) {
+      if (sameVariant(xid, bid)) continue;
       const X = byId.get(xid)?.an || ctx.parts.get(xid).an;
       if (!boxOverlap(box, worldBox(X, PX, 1))) continue;
       const cb = contribution(X, PX, B, c.W, opt);
@@ -397,6 +474,7 @@ export function autoAssemble(parts, opts = {}) {
     c.evaluatedWith = placed.size;
   };
   const addContribution = (bid, c, xid) => {
+    if (sameVariant(xid, bid)) return;
     const B = byId.get(bid).an;
     const X = ctx.parts.get(xid).an;
     const PX = placed.get(xid);
@@ -560,6 +638,15 @@ export function autoAssemble(parts, opts = {}) {
     }
   }
 
+  // 6b. variants placed in the same spot become a "keep one" group
+  for (const g of variants) {
+    const placedMembers = g.filter((id) => placed.has(id) && result.placements[id] && result.placements[id].status !== 'unplaced');
+    if (placedMembers.length < 2) continue;
+    const keep = placedMembers.slice().sort((a, b) => (result.placements[b].score || 0) - (result.placements[a].score || 0))[0];
+    for (const m of placedMembers) if (m !== keep) Object.assign(result.placements[m], { status: 'version', versionOf: keep, variant: true });
+    result.groups.push({ rep: keep, members: placedMembers, reg: {}, variant: true });
+  }
+
   // 7. unplaced: lay out beside the assembly
   let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const [id, P] of placed) {
@@ -581,6 +668,7 @@ export function autoAssemble(parts, opts = {}) {
   }
   result.poses = Object.fromEntries(placed);
   result.hyps = hyps;
+  result.kitAligned = kitAligned;
   return result;
 }
 
@@ -601,7 +689,9 @@ export function suggestPlacements(parts, targetId, poses, opts = {}) {
     if (hyps.has(k)) return hyps.get(k);
     if (hyps.has(k2)) return hyps.get(k2).map((x) => ({ ...x, T: mInvRigid(x.T) }));
     const A = byId.get(aid).an, Bb = byId.get(bid).an;
-    const h = pairHypotheses(A, Bb, { ...opt, keep: 16 });
+    const kit = kitIsAligned(parts, opts.axisAligned || 'auto');
+    const cube = kit && (opts.axisAligned === 'on' || ((A.alignedness || 0) >= 0.1 && (Bb.alignedness || 0) >= 0.1));
+    const h = pairHypotheses(A, Bb, { ...opt, keep: 16, cube });
     hyps.set(k, h);
     return h;
   };

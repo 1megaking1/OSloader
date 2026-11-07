@@ -70,7 +70,7 @@ export async function handle(type, msg, post) {
     }
     case 'suggest': {
       const list = Array.from(parts.values());
-      return { result: suggestPlacements(list, msg.id, msg.poses, { ...msg.options, hyps }) };
+      return { result: suggestPlacements(list, msg.id, msg.poses, { ...msg.options, hyps: new Map() }) };
     }
     case 'snap': {
       const list = Array.from(parts.values());
