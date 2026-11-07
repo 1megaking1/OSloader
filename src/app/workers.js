@@ -86,21 +86,58 @@ export class WorkerHub {
   get size() {
     return this.pool.length;
   }
-  analyze(positions, options) {
+  async analyze(positions, options, meta = null) {
     const c = this.pool.reduce((a, b) => (b.busy < a.busy ? b : a));
     // send a copy: the main thread keeps the original for rendering
-    return c.call('analyze', { positions: positions.slice(), options });
+    const an = await c.call('analyze', { positions: positions.slice(), options, keepAs: this.local ? null : meta });
+    if (meta) an._worker = this.pool.indexOf(c);
+    return an;
   }
+  /** register a part with the assembler (transfer) and the other pool workers (copies) */
   addPart(part) {
     const an = part.an;
+    const jobs = [];
+    if (!this.local) {
+      const from = an._worker;
+      delete an._worker;
+      this.pool.forEach((c, i) => {
+        if (i !== from) jobs.push(c.call('addPart', { part }));
+      });
+    }
     const transfer = this.local ? [] : [an.sdf.data.buffer, an.samples.pos.buffer, an.samples.nor.buffer, an.samples.grid.start.buffer, an.samples.grid.idx.buffer];
-    return this.asm.call('addPart', { part }, transfer);
+    jobs.push(this.asm.call('addPart', { part }, transfer));
+    return Promise.all(jobs);
   }
   removePart(id) {
+    if (!this.local) for (const c of this.pool) c.call('removePart', { id });
     return this.asm.call('removePart', { id });
   }
-  assemble(ids, options, onProgress) {
-    return this.asm.call('assemble', { ids, options }, [], onProgress);
+  /** compute pair hypotheses on the pool in parallel */
+  async pairs(tasks, options, onProgress) {
+    if (this.local) return this.asm.call('pairs', { tasks, options });
+    const chunks = [];
+    const size = Math.max(1, Math.min(6, Math.ceil(tasks.length / (this.pool.length * 4))));
+    for (let i = 0; i < tasks.length; i += size) chunks.push(tasks.slice(i, i + size));
+    let done = 0;
+    const out = [];
+    let next = 0;
+    const runWorker = async (c) => {
+      while (next < chunks.length) {
+        const ch = chunks[next++];
+        const res = await c.call('pairs', { tasks: ch, options });
+        out.push(...res);
+        done += ch.length;
+        onProgress && onProgress(done, tasks.length);
+      }
+    };
+    await Promise.all(this.pool.map(runWorker));
+    return out;
+  }
+  versions(ids) {
+    return this.asm.call('versions', { ids });
+  }
+  assemble(ids, options, onProgress, hypsList = null) {
+    return this.asm.call('assemble', { ids, options, hypsList }, [], onProgress);
   }
   suggest(id, poses, options) {
     return this.asm.call('suggest', { id, poses, options });

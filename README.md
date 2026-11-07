@@ -18,7 +18,7 @@ Everything runs locally in the browser. Your files are never uploaded, and the a
 
 ## Workflow
 
-1. **Drop the files.** Each part is analysed in parallel (one worker per CPU core). Multi-solid ASCII STLs, multi-object OBJ/3MF files and zipped folders are split into separate parts.
+1. **Drop the files.** Each part is analysed in parallel (one worker per CPU core), and part pairs are matched in parallel too. Multi-solid ASCII STLs, multi-object OBJ/3MF files and zipped folders are split into separate parts.
 2. **Auto-assemble** runs automatically (`A` re-runs it). The largest part becomes the base. You can pick another with *Set as base*, or *Lock* parts you have already positioned.
 3. **Review.** Parts with several plausible poses get a yellow **review** tag. Press `R` to jump to each one. The inspector lists its options:
    - Hover an option to see a ghost preview.
@@ -83,6 +83,8 @@ A global best-first loop then places the most confident part first, re-scoring e
 - The detector is tuned for CAD-exported meshes (Fusion, Onshape, SolidWorks, FreeCAD, OpenSCAD, Blender booleans), where bore and face vertices lie exactly on the true surfaces. Sculpted or scanned parts still assemble through flat cut faces and pin holes, but they have fewer features to match.
 - If a fit is looser or tighter than the defaults expect, open ⚙ Settings and adjust the contact distance, the peg and slot clearances, or the screw-hole gap.
 - Parts with nothing to mate to (stickers, badges, decorative shells) stay **not placed** next to the assembly. Place them with *Mate* or the gizmo.
+- Kits whose parts only connect through hardware that isn't in the files (screws, motors, hotends, bearings) are the hardest case. Expect more parts in *review*, and check them with Section view and Collisions. On the Voron Stealthburner + Clockwork2 STLs (11 parts, about 330k triangles), it takes roughly 10 s: 3 parts are placed confidently, 5 are offered with options, and 3 that only touch through hardware stay unplaced.
+- Big parts are fine: a 250k-triangle part analyses in about 9 s on one core, and all parts are analysed in parallel.
 
 ## Development
 
@@ -98,10 +100,14 @@ npm run build
 npm test
 ```
 
+```bash
+npm run test:browser
+```
+
 - `npm run build` writes the single-file app `dist/STL-Assembler.html` (`npm run dev` rebuilds on change).
-- `npm test` runs the alignment accuracy test on the synthetic kits.
+- `npm test` runs the unit tests and the alignment accuracy test on the synthetic kits.
+- `npm run test:browser` builds the app and runs the headless UI tests (Playwright + Chromium).
 - `node test/gen-fixtures.mjs` regenerates the test kits (built with manifold-3d, then laid flat at random orientations).
-- `node test/browser-smoke.mjs` and `node test/browser-flows.mjs` are headless UI tests. They need Playwright and Chromium.
 
 Source layout:
 

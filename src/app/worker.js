@@ -4,7 +4,8 @@
 //    auto assembly, placement suggestions and interference checks.
 
 import { analyzePart } from '../core/features.js';
-import { autoAssemble, suggestPlacements, snapToNeighbours, interference, registerShapes, groupVersions } from '../core/assemble.js';
+import { autoAssemble, suggestPlacements, snapToNeighbours, interference, registerShapes, groupVersions, computePair } from '../core/assemble.js';
+import { DEFAULTS } from '../core/match.js';
 
 const parts = new Map();
 let hyps = new Map();
@@ -27,7 +28,18 @@ export async function handle(type, msg, post) {
   switch (type) {
     case 'analyze': {
       const an = analyzePart(msg.positions, msg.options || {});
+      if (msg.keepAs) {
+        // pool workers keep their own copy for parallel pair matching
+        parts.set(msg.keepAs.id, { id: msg.keepAs.id, name: msg.keepAs.name, an });
+        return { result: an };
+      }
       return { result: an, transfer: transferList(an) };
+    }
+    case 'pairs': {
+      const opt = { ...DEFAULTS, ...(msg.options?.match || {}) };
+      const out = [];
+      for (const t of msg.tasks) out.push([t.key, computePair(parts, t, opt)]);
+      return { result: out };
     }
     case 'addPart': {
       parts.set(msg.part.id, msg.part);
@@ -46,6 +58,7 @@ export async function handle(type, msg, post) {
         hyps = new Map();
         optsKey = key;
       }
+      if (msg.hypsList) for (const [k, h] of msg.hypsList) hyps.set(k, h);
       const list = msg.ids.map((id) => parts.get(id)).filter(Boolean);
       const res = autoAssemble(list, {
         ...msg.options,

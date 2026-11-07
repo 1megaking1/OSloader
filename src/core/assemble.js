@@ -293,6 +293,29 @@ export function snapPart(ctx, bid, mates, tol = 0.05) {
 
 // ------------------------------------------------------------ main entry
 
+export const pairKey = (a, b) => a + '\u0001' + b;
+
+/** Pairs of parts to match: fixed = larger surface area. */
+export function planPairs(nodes) {
+  const out = [];
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      const area = (p) => (p.an ? p.an.stats.area : p.area);
+      const [fixed, moving] = area(a) >= area(b) ? [a, b] : [b, a];
+      const qty = Math.max(quantityFromName(moving.name), quantityFromName(fixed.name));
+      out.push({ key: pairKey(fixed.id, moving.id), fixed: fixed.id, moving: moving.id, keep: qty > 1 ? 16 + qty * 2 : 10 });
+    }
+  }
+  return out;
+}
+
+export function computePair(byId, t, opt) {
+  const A = byId.get(t.fixed)?.an, B = byId.get(t.moving)?.an;
+  if (!A || !B) return [];
+  return pairHypotheses(A, B, { ...opt, keep: t.keep });
+}
+
 /**
  * @param {{id:string, name:string, an:object}[]} parts
  * @param {object} opts {root?, autoInstances?, onProgress?, hyps? (precomputed Map)}
@@ -314,23 +337,14 @@ export function autoAssemble(parts, opts = {}) {
   const fixed = opts.fixed ? new Map(Object.entries(opts.fixed).filter(([id]) => byId.has(id) && !memberOf.has(id))) : new Map();
   const root = fixed.size ? fixed.keys().next().value : opts.root && byId.has(opts.root) && !memberOf.has(opts.root) ? opts.root : nodes.slice().sort((a, b) => b.an.stats.volume - a.an.stats.volume)[0].id;
 
-  // 3. pairwise hypotheses
+  // 3. pairwise hypotheses (may be precomputed in parallel by the caller)
   const hyps = opts.hyps || new Map();
-  const pairKey = (a, b) => a + '\u0001' + b;
-  const total = (nodes.length * (nodes.length - 1)) / 2;
+  const tasks = planPairs(nodes).filter((t) => !hyps.has(t.key) && !hyps.has(pairKey(t.moving, t.fixed)));
   let done = 0;
-  for (let i = 0; i < nodes.length; i++) {
-    for (let j = i + 1; j < nodes.length; j++) {
-      const a = nodes[i], b = nodes[j];
-      const [fixed, moving] = a.an.stats.area >= b.an.stats.area ? [a, b] : [b, a];
-      const k = pairKey(fixed.id, moving.id);
-      if (!hyps.has(k) && !hyps.has(pairKey(moving.id, fixed.id))) {
-        const qty = Math.max(quantityFromName(moving.name), quantityFromName(fixed.name));
-        hyps.set(k, pairHypotheses(fixed.an, moving.an, { ...opt, keep: qty > 1 ? 16 + qty * 2 : 10 }));
-      }
-      done++;
-      if (done % 4 === 0) progress({ stage: 'matching', done, total });
-    }
+  for (const t of tasks) {
+    hyps.set(t.key, computePair(byId, t, opt));
+    done++;
+    if (done % 4 === 0) progress({ stage: 'matching', done, total: tasks.length });
   }
   /** hypotheses for B relative to A (T: B -> A local) */
   const relHyps = (aid, bid) => {

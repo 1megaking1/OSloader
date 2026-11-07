@@ -5,7 +5,7 @@ import { Viewer } from './viewer.js';
 import { WorkerHub } from './workers.js';
 import { loadInputs, filesFromDataTransfer, filesFromInput, download, transformSoup, exportBodies, zipFiles, writeSTLBinary } from './io.js';
 import { solvePart, worldFeature, getFeature, mateError, MATE_TYPES } from '../core/solver.js';
-import { quantityFromName } from '../core/assemble.js';
+import { quantityFromName, planPairs } from '../core/assemble.js';
 import { mIdentity, mMul, mInvRigid, mPoint, mDir, mTranslation, mAxisAngle, mAlign, dot, sub, add, scale, cross, norm, len, dist, rad, deg, reject } from '../core/math.js';
 import { renderParts, renderInspector, renderSummary, featureLabel, mateLabel } from './panels.js';
 import { DEMO_KITS } from 'virtual:demo-kits';
@@ -55,6 +55,8 @@ export class App {
     this.viewer = new Viewer($('#viewport'));
     this.hub = new WorkerHub();
     this.featCache = new Map();
+    this.hypCache = new Map();
+    this.hypOptsKey = '';
     this.bind();
     this.render();
     this.status(this.hub.local ? 'Ready (single-threaded mode).' : `Ready – ${this.hub.size} analysis workers.`);
@@ -314,7 +316,7 @@ export class App {
         try {
           let an;
           try {
-            an = await this.hub.analyze(part.positions, {});
+            an = await this.hub.analyze(part.positions, {}, { id: part.id, name: part.name });
           } catch (err) {
             if (this.hub.local || !/worker|security|script/i.test(String(err.message))) throw err;
             console.warn('Worker failed, switching to main thread', err);
@@ -373,21 +375,44 @@ export class App {
     for (const p of ready) if (p.locked) fixed[p.id] = p.pose;
     const root = this.root && this.parts.get(this.root)?.include ? this.root : null;
     if (root && !fixed[root]) fixed[root] = this.parts.get(root).pose;
-    this.status('Matching parts…');
+    this.status('Looking for duplicate versions…');
     this.progress(0);
     $('#btn-auto').disabled = true;
     const t0 = performance.now();
     let res;
     try {
+      const ids = ready.map((p) => p.id);
+      const match = this.matchOptions();
+      const okey = JSON.stringify(match);
+      if (okey !== this.hypOptsKey) {
+        this.hypCache = new Map();
+        this.hypOptsKey = okey;
+      }
+      const groups = await this.hub.versions(ids);
+      const members = new Set(groups.flatMap((g) => g.members.filter((m) => m !== g.rep)));
+      const nodes = ready.filter((p) => !members.has(p.id)).map((p) => ({ id: p.id, name: p.name, area: p.an.stats.area }));
+      const all = planPairs(nodes);
+      const todo = all.filter((t) => !this.hypCache.has(t.key));
+      if (todo.length) {
+        this.status(`Matching ${todo.length} part pairs on ${this.hub.size} threads…`);
+        const out = await this.hub.pairs(todo, { match }, (d, n) => {
+          this.progress(d / n);
+          this.status(`Matching part pairs ${d}/${n}…`);
+        });
+        for (const [k, h] of out) this.hypCache.set(k, h);
+      }
+      const hypsList = all.map((t) => [t.key, this.hypCache.get(t.key)]).filter((x) => x[1]);
+      this.status('Placing parts…');
       res = await this.hub.assemble(
-        ready.map((p) => p.id),
-        { fixed: Object.keys(fixed).length ? fixed : null, autoInstances: this.settings.autoInstances, match: this.matchOptions() },
+        ids,
+        { fixed: Object.keys(fixed).length ? fixed : null, autoInstances: this.settings.autoInstances, match, groups },
         (pr) => {
           if (pr.stage === 'matching') {
             this.progress(pr.done / pr.total);
             this.status(`Matching part pairs ${pr.done}/${pr.total}…`);
           } else if (pr.stage === 'placing') this.status(`Placing parts ${pr.done}/${pr.total}…`);
         },
+        hypsList,
       );
     } catch (err) {
       console.error(err);
@@ -524,7 +549,10 @@ export class App {
     this.order = this.order.filter((x) => x !== id);
     this.viewer.removePart(id);
     this.mates = this.mates.filter((m) => m.a.part !== id && m.b.part !== id);
-    if (!p.instanceOf) this.hub.removePart(id);
+    if (!p.instanceOf) {
+      this.hub.removePart(id);
+      if (this.hypCache) for (const k of Array.from(this.hypCache.keys())) if (k.split('\u0001').includes(id)) this.hypCache.delete(k);
+    }
     if (this.sel === id) this.sel = null;
     if (this.root === id) this.root = null;
     this.groups = this.groups.map((g) => ({ ...g, members: g.members.filter((m) => m !== id) })).filter((g) => g.members.length > 1);
