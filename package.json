@@ -8,8 +8,9 @@
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",
     "fixtures": "node test/gen-fixtures.mjs",
-    "test": "node test/unit.mjs && node test/run-tests.mjs",
-    "test:browser": "node build.mjs && node test/browser-smoke.mjs && node test/browser-flows.mjs"
+    "test": "node test/unit.mjs && node test/unit-pick.mjs && node test/run-tests.mjs",
+    "test:browser": "node build.mjs && node test/browser-smoke.mjs && node test/browser-flows.mjs",
+    "test:real": "node --max-old-space-size=8000 test/real/run-real.mjs test/real/nerf-blaster"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

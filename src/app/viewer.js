@@ -406,6 +406,40 @@ export class Viewer extends EventTarget {
     this.requestRender();
   }
 
+  /** highlighted straight edge under the cursor (edge tool) */
+  hoverLine(seg) {
+    if (this._hoverLine) {
+      this.scene.remove(this._hoverLine);
+      this._hoverLine.geometry.dispose();
+      this._hoverLine = null;
+    }
+    if (seg) {
+      const g = new THREE.BufferGeometry().setFromPoints(seg.map((p) => new THREE.Vector3(...p)));
+      const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xffc400, depthTest: false, linewidth: 2 }));
+      l.renderOrder = 8;
+      this._hoverLine = l;
+      this.scene.add(l);
+    }
+    this.requestRender();
+  }
+
+  /** persistent coloured overlay of some triangles of a part (kept until clearMarks) */
+  markFeature(id, tris, color) {
+    const p = this.parts.get(id);
+    if (!p || !tris || !tris.length) return;
+    const src = p.mesh.geometry.attributes.position.array;
+    const out = new Float32Array(tris.length * 9);
+    tris.forEach((t, i) => out.set(src.subarray(t * 9, t * 9 + 9), i * 9));
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(out, 3));
+    const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(p.mesh.matrix);
+    mesh.renderOrder = 5;
+    this.marks.add(mesh);
+    this.requestRender();
+  }
+
   markPoint(p, color = 0xffd04f, size = 1) {
     const g = new THREE.SphereGeometry(size, 12, 8);
     const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color, depthTest: false }));

@@ -112,6 +112,10 @@ export class WorkerHub {
     if (!this.local) for (const c of this.pool) c.call('removePart', { id });
     return this.asm.call('removePart', { id });
   }
+  addFeature(id, cyl) {
+    if (!this.local) for (const c of this.pool) c.call('addFeature', { id, cyl });
+    return this.asm.call('addFeature', { id, cyl });
+  }
   /** compute pair hypotheses on the pool in parallel */
   async pairs(tasks, options, onProgress) {
     if (this.local) return this.asm.call('pairs', { tasks, options });

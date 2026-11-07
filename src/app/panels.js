@@ -8,6 +8,8 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const f2 = (x) => (Math.abs(x) >= 100 ? x.toFixed(1) : x.toFixed(2));
 
 const SOURCE = {
+  'aligned bores': 'bores (square to the axes)',
+  'matching faces': 'same-shape faces',
   'bore-pair': 'two bores/pegs',
   'bore+angle': 'bore + rotation search',
   rect: 'rectangular peg/hole',
@@ -28,10 +30,18 @@ const CHIP = {
 
 export function featureLabel(part, f, long = false) {
   if (!f || !part.an) return 'surface';
+  if (f.startsWith('e:')) {
+    const g = getFeature(part.an, f);
+    return `edge ${f2(g.len)} mm`;
+  }
+  if (f.includes('+')) {
+    const g = getFeature(part.an, f);
+    return g ? `mid-plane of 2 faces (${f2(g.width)} mm apart)` : 'mid-plane';
+  }
   const g = getFeature(part.an, f);
   if (!g) return f;
   if (g.kind === 'cyl') {
-    const what = g.concave ? 'hole' : 'peg';
+    const what = (g.src === 'user' ? 'marked ' : '') + (g.cone ? (g.countersink ? 'countersink' : 'tapered ') : '') + (g.countersink ? '' : g.concave ? 'hole' : 'peg');
     const partial = g.full ? '' : g.span > rad(240) ? ' (D/partial)' : ` (${Math.round(deg(g.span))}° arc)`;
     return `Ø${f2(2 * g.r)} ${what}${partial}${long ? `, length ${f2(g.len)} mm` : ''}`;
   }
@@ -188,7 +198,7 @@ export function renderInspector(app) {
     }
     else if (p.status === 'manual') how = 'Positioned manually.';
     out.push(`<div class="sec"><h3>Placement</h3><div class="hint">${how}</div>
-      <div class="btnrow"><button class="small" data-a="autoplace" title="Find placements against the parts already placed">Auto-place</button><button class="small" data-a="snap" title="Infer mates with touching neighbours and snap exactly">Snap to neighbours</button>${p.status === 'ambiguous' ? '<button class="small primary" data-a="accept">Accept (Enter)</button>' : ''}</div>`);
+      <div class="btnrow"><button class="small" data-a="autoplace" title="Find placements against the parts already placed">Auto-place</button><button class="small" data-a="snap" title="Infer mates with touching neighbours and snap exactly">Snap to neighbours</button>${p.status === 'ambiguous' ? '<button class="small primary" data-a="accept">Accept (Enter)</button>' : ''}${p.alternatives?.length && p.status !== 'unplaced' && p.status !== 'root' ? '<button class="small" data-a="reject" title="None of the options is right: park the part beside the assembly (N)">None of these (N)</button>' : ''}</div>`);
     if (p.alternatives?.length) {
       const max = Math.max(...p.alternatives.map((a) => a.score), 1e-6);
       out.push(`<div style="margin-top:8px">${p.alternatives
@@ -220,7 +230,7 @@ export function renderInspector(app) {
             <span class="mt">${esc(l.title)}${m.auto ? ' <span class="muted">auto</span>' : ''}</span>
             <span><button class="small" data-m="toggle" title="Enable/disable">${m.enabled === false ? 'off' : 'on'}</button> <button class="small" data-m="del" title="Delete mate">✕</button></span>
             <span class="md">${l.detail}${isFinite(err) && err > 0.05 ? ` <span class="err">· off by ${err.toFixed(2)}</span>` : ''}</span>
-            ${['contact', 'flush', 'centered', 'axisInPlane'].includes(m.type) ? `<span class="mc">Offset <input type="number" step="0.05" value="${m.offset || 0}" data-m="offset"> mm</span>` : ''}
+            ${['contact', 'flush', 'centered', 'midplane', 'axisInPlane'].includes(m.type) ? `<span class="mc">Offset <input type="number" step="0.05" value="${m.offset || 0}" data-m="offset"> mm</span>` : ''}
             ${m.type === 'coaxial' ? `<span class="mc"><label><input type="checkbox" data-m="orient" ${m.orient ? 'checked' : ''}> lock direction</label> <label><input type="checkbox" data-m="flip" ${m.flip ? 'checked' : ''}> flip</label></span>` : ''}
           </div>`;
         })
@@ -306,6 +316,10 @@ function bindPart(app, p) {
     else if (a === 'remove') app.removePart(p.id);
     else if (a === 'autoplace') app.autoPlace(p.id);
     else if (a === 'snap') snapNow(app, p);
+    else if (a === 'reject') {
+      app.rejectPlacement(p.id);
+      app.reviewNext();
+    }
     else if (a === 'accept') {
       p.status = 'placed';
       p.reviewed = true;

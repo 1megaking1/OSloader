@@ -11,6 +11,23 @@ import { solveN } from './fit.js';
 
 /** Look up a feature by key ('c3', 'p5', 's2', 'r1') in an analysis. */
 export function getFeature(an, key) {
+  if (key.startsWith('e:')) {
+    // straight edge given by its two local end points
+    const v = key.slice(2).split(',').map(Number);
+    const p0 = [v[0], v[1], v[2]], p1 = [v[3], v[4], v[5]];
+    const d = sub(p1, p0);
+    const L = len(d);
+    return { kind: 'edge', a: L > 0 ? scale(d, 1 / L) : [1, 0, 0], c: scale(add(p0, p1), 0.5), len: L, p0, p1 };
+  }
+  if (key.includes('+')) {
+    // mid-plane between two (parallel) faces of one part
+    const [k1, k2] = key.split('+');
+    const P = an.planes[+k1.slice(1)], Q = an.planes[+k2.slice(1)];
+    if (!P || !Q) return null;
+    const n = P.n;
+    const d = dot(sub(Q.c, P.c), n);
+    return { kind: 'pair', n, mid: add(P.c, scale(n, d / 2)), width: Math.abs(d), concave: d > 0, composite: true };
+  }
   const k = key[0], i = +key.slice(1);
   if (k === 'c') return an.cyls[i] && { kind: 'cyl', ...an.cyls[i] };
   if (k === 'p') return an.planes[i] && { kind: 'plane', ...an.planes[i] };
@@ -27,20 +44,23 @@ export function worldFeature(an, key, P) {
   if (f.kind === 'plane') return { ...f, n: norm(mDir(P, f.n)), c: mPoint(P, f.c), u: mDir(P, f.u), v: mDir(P, f.v) };
   if (f.kind === 'pair') return { ...f, n: norm(mDir(P, f.n)), mid: mPoint(P, f.mid) };
   if (f.kind === 'rect') return { ...f, axis: norm(mDir(P, f.axis)), center: mPoint(P, f.center), d1: norm(mDir(P, f.d1)), d2: norm(mDir(P, f.d2)) };
+  if (f.kind === 'edge') return { ...f, a: norm(mDir(P, f.a)), c: mPoint(P, f.c), p0: mPoint(P, f.p0), p1: mPoint(P, f.p1) };
   return null;
 }
 
 export const MATE_TYPES = {
   coaxial: { label: 'Coaxial', needs: ['cyl', 'cyl'] },
   contact: { label: 'Contact (faces touch)', needs: ['plane', 'plane'] },
-  flush: { label: 'Flush (coplanar, same side)', needs: ['plane', 'plane'] },
+  flush: { label: 'Flush (coplanar, facing the same way)', needs: ['plane', 'plane'] },
   centered: { label: 'Centered (even gap)', needs: ['pair', 'pair'] },
   rect: { label: 'Rect peg in hole', needs: ['rect', 'rect'] },
+  midplane: { label: 'Mid-plane (4 faces)', needs: ['pair', 'pair'] },
+  collinear: { label: 'Edges collinear', needs: ['edge', 'edge'] },
   parallel: { label: 'Parallel', needs: ['any', 'any'] },
   axisInPlane: { label: 'Axis on mid-plane', needs: ['cyl', 'pair'] },
 };
 
-const dirOf = (f) => (f.kind === 'cyl' ? f.a : f.kind === 'plane' ? f.n : f.kind === 'pair' ? f.n : f.axis);
+const dirOf = (f) => (f.kind === 'cyl' || f.kind === 'edge' ? f.a : f.kind === 'plane' ? f.n : f.kind === 'pair' ? f.n : f.axis);
 
 /** Residual vector for one mate given world features fa (reference) and fb (moving). */
 export function mateResiduals(m, fa, fb, out) {
@@ -74,6 +94,15 @@ export function mateResiduals(m, fa, fb, out) {
       out.push(...scale(sub(fb.n, fa.n), L));
       return;
     }
+    case 'collinear': {
+      // the moving edge lies on the reference edge's line
+      const L = Math.max(fb.len || 5, 4);
+      const b1 = add(fb.c, scale(fb.a, -L / 2)), b2 = add(fb.c, scale(fb.a, L / 2));
+      out.push(...reject(sub(b1, fa.c), fa.a), ...reject(sub(b2, fa.c), fa.a));
+      if (m.axial != null) out.push(dot(sub(fb.c, fa.c), fa.a) - m.axial);
+      return;
+    }
+    case 'midplane':
     case 'centered': {
       const L = 10;
       out.push(dot(sub(fb.mid, fa.mid), fa.n) - off);

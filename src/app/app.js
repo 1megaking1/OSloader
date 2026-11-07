@@ -8,6 +8,7 @@ import { solvePart, worldFeature, getFeature, mateError, MATE_TYPES } from '../c
 import { quantityFromName, planPairs } from '../core/assemble.js';
 import { mIdentity, mMul, mInvRigid, mPoint, mDir, mTranslation, mAxisAngle, mAlign, dot, sub, add, scale, cross, norm, len, dist, rad, deg, reject } from '../core/math.js';
 import { renderParts, renderInspector, renderSummary, featureLabel, mateLabel } from './panels.js';
+import { meshIndex, pickEdge, fitCylinderAt, holeFrom3Points } from '../core/pickfit.js';
 import { DEMO_KITS } from 'virtual:demo-kits';
 
 const $ = (s) => document.querySelector(s);
@@ -215,6 +216,12 @@ export class App {
         p.status = 'placed';
         p.reviewed = true;
         this.render();
+        this.reviewNext();
+      }
+    } else if (k === 'n' || k === 'N') {
+      const p = this.parts.get(this.sel);
+      if (p && p.alternatives?.length) {
+        this.rejectPlacement(p.id);
         this.reviewNext();
       }
     } else if (k === 'Delete' || k === 'Backspace') {
@@ -744,6 +751,20 @@ export class App {
     }
   }
 
+  /** none of the offered placements is right: park the part beside the assembly, unmated */
+  rejectPlacement(id) {
+    const p = this.parts.get(id);
+    if (!p) return;
+    this.snapshot();
+    this.mates = this.mates.filter((m) => m.b.part !== id);
+    p.status = 'unplaced';
+    p.altIndex = -1;
+    this.viewer.clearGhosts();
+    this.layoutLoose([p]);
+    this.render();
+    this.status(`${p.name} parked beside the assembly – place it with Mate (M), the gizmo (G/T), or pick an option later.`);
+  }
+
   replaceAutoMates(id, mates) {
     this.mates = this.mates.filter((m) => !(m.auto && m.b.part === id));
     let k = 0;
@@ -1028,7 +1049,20 @@ export class App {
     if (this._hoverRaf) return;
     this._hoverRaf = requestAnimationFrame(() => {
       this._hoverRaf = null;
-      const h = this.featureAt(this.viewer.pick(e.clientX, e.clientY));
+      const hit = this.viewer.pick(e.clientX, e.clientY);
+      if (this.mode === 'mate' && this.mateTool === 'edge') {
+        const eh = this.edgeAt(hit);
+        this.viewer.hoverLine(eh ? [eh.p0, eh.p1] : null);
+        this.viewer.overlay('hover', null);
+        $('#hover-tip').hidden = true;
+        return;
+      }
+      if (this.mode === 'mate' && this.mateTool === 'hole') {
+        this.viewer.overlay('hover', null);
+        $('#hover-tip').hidden = true;
+        return;
+      }
+      const h = this.featureAt(hit);
       const same = this.hover && h && this.hover.part === h.part && this.hover.f === h.f;
       if (!same) this.setHover(h);
       const tip = $('#hover-tip');
@@ -1046,7 +1080,7 @@ export class App {
   onClick(e) {
     const hit = this.viewer.pick(e.clientX, e.clientY);
     const h = this.featureAt(hit);
-    if (this.mode === 'mate') return this.matePick(h, e);
+    if (this.mode === 'mate') return this.mateClick(hit, e);
     if (this.mode === 'measure') return this.measurePick(h);
     if (this.mode === 'face-down') return this.faceDownPick(h);
     this.select(h ? h.part : null);
@@ -1062,8 +1096,11 @@ export class App {
     this.viewer.overlay('sel', null);
     this.viewer.clearMarks();
     const banner = $('#banner');
+    this.viewer.hoverLine(null);
+    this.picks = [];
     if (mode === 'mate') {
-      banner.innerHTML = '<b>Mate:</b> click a bore, peg or face on the part you want to <b>move</b>. Esc to cancel.';
+      this.mateTool = this.mateTool || 'pair';
+      this.renderMateBanner();
       banner.hidden = false;
     } else if (mode === 'measure') {
       banner.innerHTML = '<b>Measure:</b> click a feature for its size, or two features for distance/angle. Esc to finish.';
@@ -1074,12 +1111,172 @@ export class App {
     } else banner.hidden = true;
   }
 
+  // ------------------------------------------------------------ mate tools
+  renderMateBanner(msg = null) {
+    const tools = [
+      ['pair', 'Two features', 'Click a bore, peg, face or curved surface on the part to move, then one on the target part.'],
+      ['mid', 'Mid-plane (4 faces)', 'Click two parallel faces on the part to move, then two parallel faces on the target: their mid-planes are made to coincide (even gap / centred).'],
+      ['edge', 'Edge to edge', 'Click a straight edge on the part to move, then an edge on the target: the edges are made collinear (or parallel).'],
+      ['hole', 'Mark hole (3 clicks)', 'Click three points on the rim or wall of a hole the tool did not recognise. It becomes a normal hole for mates and auto-assembly.'],
+    ];
+    const cur = tools.find((t) => t[0] === this.mateTool) || tools[0];
+    const banner = $('#banner');
+    banner.innerHTML = `<div class="btnrow" style="margin:0 0 4px">${tools
+      .map((t) => `<button class="small ${t[0] === this.mateTool ? 'active' : ''}" data-tool="${t[0]}">${t[1]}</button>`)
+      .join('')}</div><div>${msg || cur[2]} <span class="muted">Esc to finish.</span></div>`;
+    banner.querySelectorAll('[data-tool]').forEach((b) => {
+      b.onclick = () => {
+        this.mateTool = b.dataset.tool;
+        this.mateA = null;
+        this.picks = [];
+        this.viewer.overlay('sel', null);
+        this.viewer.clearMarks();
+        $('#mate-pop').hidden = true;
+        this.renderMateBanner();
+      };
+    });
+  }
+
+  /** world point -> local point of a part */
+  toLocal(id, p) {
+    return mPoint(mInvRigid(this.parts.get(id).pose), p);
+  }
+
+  meshIndexOf(part) {
+    const base = part.instanceOf ? this.parts.get(part.instanceOf) : part;
+    if (!this.meshIdx) this.meshIdx = new Map();
+    if (!this.meshIdx.has(base.id)) this.meshIdx.set(base.id, meshIndex(base.positions));
+    return this.meshIdx.get(base.id);
+  }
+
+  /** world-space size of a few pixels at a point (for pick tolerances) */
+  pixelSize(p) {
+    const cam = this.viewer.camera;
+    const d = Math.hypot(cam.position.x - p[0], cam.position.y - p[1], cam.position.z - p[2]);
+    const h = this.viewer.renderer.domElement.clientHeight || 800;
+    return (2 * d * Math.tan((cam.fov * Math.PI) / 360)) / h;
+  }
+
+  edgeAt(hit) {
+    if (!hit) return null;
+    const part = this.parts.get(hit.id);
+    if (!part) return null;
+    const idx = this.meshIndexOf(part);
+    const lp = this.toLocal(part.id, hit.point);
+    const e = pickEdge(idx, hit.tri, lp, this.pixelSize(hit.point) * 10);
+    if (!e) return null;
+    const key = 'e:' + [...e.p0, ...e.p1].map((v) => +v.toFixed(4)).join(',');
+    return { part: part.id, f: key, p0: mPoint(part.pose, e.p0), p1: mPoint(part.pose, e.p1) };
+  }
+
+  /** register a user-made cylinder (fitted arc / 3-point hole) as a feature of the part */
+  addUserCylinder(part, cyl) {
+    const base = part.instanceOf ? this.parts.get(part.instanceOf) : part;
+    const an = base.an;
+    const c = { ...cyl, id: an.cyls.length, ends: [] };
+    const tris = c.tris || [];
+    delete c.tris;
+    an.cyls.push(c);
+    for (const t of tris) an.triCyl[t] = c.id;
+    for (const k of Array.from(this.featCache.keys())) if (k.startsWith(base.id + '|')) this.featCache.delete(k);
+    base.userCyls = (base.userCyls || []).concat([{ ...c, tris }]);
+    this.hub.addFeature(base.id, c);
+    for (const k of Array.from(this.hypCache.keys())) if (k.split('\u0001').some((x) => x.split('|')[0] === base.id)) this.hypCache.delete(k);
+    this.updateAxes(base);
+    for (const q of this.parts.values()) if (q.instanceOf === base.id) this.updateAxes(q);
+    return 'c' + c.id;
+  }
+
+  /** feature at a click, fitting a cylinder/arc on the spot when nothing was detected there */
+  featureOrFit(hit) {
+    const h = this.featureAt(hit);
+    if (!h || h.f || !hit) return h;
+    const part = this.parts.get(hit.id);
+    const cyl = fitCylinderAt(this.meshIndexOf(part), hit.tri);
+    if (!cyl) return h;
+    const f = this.addUserCylinder(part, cyl);
+    this.status(`Fitted ${featureLabel(this.parts.get(part.id), f)} on ${part.name} from the surface you clicked.`);
+    return { part: part.id, f, point: hit.point };
+  }
+
+  mateClick(hit, e) {
+    const tool = this.mateTool || 'pair';
+    if (tool === 'pair') return this.matePick(this.featureOrFit(hit), e);
+    if (tool === 'hole') return this.holePick(hit);
+    if (tool === 'edge') return this.edgePick(this.edgeAt(hit), e);
+    if (tool === 'mid') return this.midPick(this.featureAt(hit));
+  }
+
+  holePick(hit) {
+    if (!hit) return;
+    const part = this.parts.get(hit.id);
+    if (this.picks.length && this.picks[0].part !== hit.id) this.picks = [];
+    this.picks.push({ part: hit.id, p: this.toLocal(hit.id, hit.point), w: hit.point });
+    this.viewer.markPoint(hit.point, 0xffd04f, Math.max(0.2, this.pixelSize(hit.point) * 4));
+    if (this.picks.length < 3) {
+      this.renderMateBanner(`Mark hole on <b>${part.name}</b>: point ${this.picks.length}/3 – click ${3 - this.picks.length} more around the hole.`);
+      return;
+    }
+    const cyl = holeFrom3Points(this.meshIndexOf(part), this.picks.map((x) => x.p));
+    this.picks = [];
+    this.viewer.clearMarks();
+    if (!cyl) {
+      this.renderMateBanner('Those three points are in a line – click three points around the hole.');
+      return;
+    }
+    this.snapshot();
+    const f = this.addUserCylinder(part, cyl);
+    this.highlightFeature(part.id, f, 'sel', 0x4f9dff);
+    this.renderMateBanner(`Marked ${featureLabel(this.parts.get(part.id), f, true)} on <b>${part.name}</b>. Use <b>Two features</b> to mate it, or mark another.`);
+    this.render();
+  }
+
+  edgePick(h, e) {
+    if (!h) return this.renderMateBanner('No straight edge there – hover until an edge lights up yellow, then click.');
+    if (!this.mateA || h.part === this.mateA.part) {
+      this.mateA = h;
+      this.viewer.clearMarks();
+      this.viewer.markLine(h.p0, h.p1, 0x4f9dff);
+      this.renderMateBanner(`Edge picked on <b>${this.parts.get(h.part).name}</b>. Now click the edge to align it <b>to</b> (on another part).`);
+      return;
+    }
+    this.viewer.markLine(h.p0, h.p1, 0x5ad18a);
+    this.showMatePopup(this.mateA, h, e, [
+      { type: 'collinear', label: 'Collinear (on one line)', a: h.f, b: this.mateA.f },
+      { type: 'parallel', label: 'Parallel only', a: h.f, b: this.mateA.f },
+    ]);
+  }
+
+  midPick(h) {
+    if (!h || !h.f || h.f[0] !== 'p') return this.renderMateBanner('Click flat faces for a mid-plane mate.');
+    const pk = this.picks;
+    const pl = (x) => getFeature(this.parts.get(x.part).an, x.f);
+    if (pk.length === 1 || pk.length === 3) {
+      const first = pk[pk.length - 1];
+      if (h.part !== first.part || h.f === first.f) return this.renderMateBanner('Pick the second face on the <b>same part</b>.');
+      if (Math.abs(dot(pl(first).n, pl(h).n)) < Math.cos(rad(3))) return this.renderMateBanner('The two faces must be parallel – pick a face parallel to the first one.');
+    }
+    if (pk.length === 2 && h.part === pk[0].part) return this.renderMateBanner('Now pick two faces on the <b>other</b> part.');
+    pk.push(h);
+    const colors = [0x4f9dff, 0x4f9dff, 0x5ad18a, 0x5ad18a];
+    this.viewer.markFeature(h.part, this.featureTris(this.parts.get(h.part), h.f), colors[pk.length - 1]);
+    const msgs = ['', 'Now the second face on the part to move (parallel to the first).', 'Now two parallel faces on the part to align it to.', 'And the second face on that part.'];
+    if (pk.length < 4) return this.renderMateBanner(msgs[pk.length]);
+    const [b1, b2, a1, a2] = pk;
+    this.picks = [];
+    const m = { type: 'midplane', a: { part: a1.part, f: a1.f + '+' + a2.f }, b: { part: b1.part, f: b1.f + '+' + b2.f }, offset: 0 };
+    this.viewer.clearMarks();
+    this.addMate(m);
+    this.select(b1.part);
+    this.renderMateBanner('Mid-plane mate added. Pick four more faces for another, or Esc to finish.');
+  }
+
   matePick(h, e) {
     if (!h || !h.f) return;
     if (!this.mateA) {
       this.mateA = h;
       this.highlightFeature(h.part, h.f, 'sel', 0x4f9dff);
-      $('#banner').innerHTML = `<b>Mate:</b> moving <b>${this.parts.get(h.part).name}</b> · ${featureLabel(this.parts.get(h.part), h.f)}. Now click the feature to mate it <b>to</b> (on another part).`;
+      this.renderMateBanner(`Moving <b>${this.parts.get(h.part).name}</b> · ${featureLabel(this.parts.get(h.part), h.f)}. Now click the feature to mate it <b>to</b> (on another part).`);
       return;
     }
     if (h.part === this.mateA.part) {
@@ -1105,9 +1302,9 @@ export class App {
       opts.push({ type: 'coaxial', label: 'Coaxial (fixed orientation)', a: a.f, b: b.f, orient: true });
       opts.push({ type: 'coaxial', label: 'Coaxial (flipped)', a: a.f, b: b.f, orient: true, flip: true });
     } else if (fb.kind === 'plane' && fa.kind === 'plane') {
-      opts.push({ type: 'contact', label: 'Contact (touching)', a: a.f, b: b.f });
-      opts.push({ type: 'flush', label: 'Flush (coplanar)', a: a.f, b: b.f });
-      opts.push({ type: 'parallel', label: 'Parallel only', a: a.f, b: b.f });
+      opts.push({ type: 'contact', label: 'Contact (faces touch)', help: 'The two faces press against each other, facing opposite ways.', a: a.f, b: b.f });
+      opts.push({ type: 'flush', label: 'Flush (same plane, same side)', help: 'Both faces lie in one plane and face the same way, like two lids flush with each other. For centring between faces use the Mid-plane (4 faces) tool.', a: a.f, b: b.f });
+      opts.push({ type: 'parallel', label: 'Parallel only', help: 'Only the orientation is constrained.', a: a.f, b: b.f });
       const sa = pairOf(pa, a.f), sb = pairOf(pb, b.f);
       if (sa && sb) opts.push({ type: 'centered', label: 'Centered (even gap)', a: sa, b: sb });
     } else {
@@ -1121,14 +1318,14 @@ export class App {
     return opts;
   }
 
-  showMatePopup(b, a, e) {
+  showMatePopup(b, a, e, custom = null) {
     const pop = $('#mate-pop');
     const pb = this.parts.get(b.part), pa = this.parts.get(a.part);
-    const opts = this.mateOptions(b, a);
-    this.highlightFeature(a.part, a.f, 'hover', 0x5ad18a);
+    const opts = custom || this.mateOptions(b, a);
+    if (!custom) this.highlightFeature(a.part, a.f, 'hover', 0x5ad18a);
     pop.innerHTML = `<h4>Mate ${pb.name} → ${pa.name}</h4>
       <div class="hint">${featureLabel(pb, b.f)} ↔ ${featureLabel(pa, a.f)}</div>
-      <div class="opts">${opts.map((o, i) => `<button data-i="${i}" class="${i === 0 ? 'active' : ''}">${o.label}</button>`).join('')}</div>
+      <div class="opts">${opts.map((o, i) => `<button data-i="${i}" class="${i === 0 ? 'active' : ''}" title="${o.help || ''}">${o.label}</button>`).join('')}</div>
       <div class="row">Offset <input id="mp-off" type="number" step="0.05" value="0"> mm</div>
       <div class="row"><button id="mp-ok" class="primary">Apply</button><button id="mp-cancel">Cancel</button></div>`;
     const r = $('#viewport').getBoundingClientRect();
@@ -1142,15 +1339,25 @@ export class App {
         pop.querySelectorAll('.opts button').forEach((x) => x.classList.toggle('active', x === btn));
       };
     });
-    pop.querySelector('#mp-cancel').onclick = () => this.setMode('select');
+    pop.querySelector('#mp-cancel').onclick = () => {
+      pop.hidden = true;
+      this.mateA = null;
+      this.viewer.clearMarks();
+      this.renderMateBanner();
+    };
     pop.querySelector('#mp-ok').onclick = () => {
       const o = opts[sel];
       const m = { type: o.type, a: { part: a.part, f: o.a }, b: { part: b.part, f: o.b }, offset: +pop.querySelector('#mp-off').value || 0 };
       if (o.orient) m.orient = true;
       if (o.flip) m.flip = true;
-      this.setMode('select');
+      pop.hidden = true;
+      this.mateA = null;
+      this.viewer.clearMarks();
+      this.viewer.overlay('sel', null);
+      this.viewer.overlay('hover', null);
       this.addMate(m);
       this.select(b.part);
+      this.renderMateBanner(`Added ${MATE_TYPES[m.type]?.label || m.type} mate. Pick the next pair, or Esc to finish.`);
       this.status(`Added ${MATE_TYPES[m.type]?.label || m.type} mate.`);
     };
   }
@@ -1261,7 +1468,7 @@ export class App {
       root: this.root,
       parts: this.order.map((id) => {
         const p = this.parts.get(id);
-        return { id, name: p.name, path: p.path, instanceOf: p.instanceOf || null, tris: p.positions.length / 9, pose: p.pose, include: p.include, visible: p.visible, locked: p.locked, status: p.status, color: p.color };
+        return { id, name: p.name, path: p.path, instanceOf: p.instanceOf || null, tris: p.positions.length / 9, pose: p.pose, include: p.include, visible: p.visible, locked: p.locked, status: p.status, color: p.color, userCyls: p.instanceOf ? undefined : p.userCyls };
       }),
       mates: this.mates,
       groups: this.groups,
@@ -1291,6 +1498,7 @@ export class App {
       }
       if (!p) continue;
       matched++;
+      if (sp.userCyls && !p.instanceOf && !p.userCyls) for (const c of sp.userCyls) this.addUserCylinder(p, c);
       p.pose = sp.pose;
       p.include = sp.include;
       p.locked = sp.locked;

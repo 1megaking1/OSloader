@@ -47,6 +47,17 @@ export async function handle(type, msg, post) {
       for (const k of Array.from(hyps.keys())) if (k.split('\u0001').includes(msg.part.id)) hyps.delete(k);
       return { result: true };
     }
+    case 'addFeature': {
+      // a user-made cylinder (3-point hole / fitted arc)
+      const part = parts.get(msg.id);
+      if (part) {
+        const c = { ...msg.cyl, id: part.an.cyls.length };
+        part.an.cyls.push(c);
+        if (part.an._cache) part.an._cache.clear();
+        for (const k of Array.from(hyps.keys())) if (k.split('\u0001').some((x) => x.split('|')[0] === msg.id)) hyps.delete(k);
+      }
+      return { result: true };
+    }
     case 'removePart': {
       parts.delete(msg.id);
       for (const k of Array.from(hyps.keys())) if (k.split('\u0001').includes(msg.id)) hyps.delete(k);

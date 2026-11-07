@@ -92,6 +92,78 @@ const mated = await ev(() => {
 });
 check(typeof mated === 'number' && mated < 0.05, `manual rect mate solves (${mated})`);
 
+// mid-plane (4 faces): lever's two side faces centred between the clevis ears
+const mid = await ev(() => {
+  const a = window.app;
+  const arm = a.parts.get('arm'), lever = a.parts.get('lever');
+  const slot = arm.an.pairs.find((p) => p.concave && Math.abs(p.width - 5.4) < 0.05);
+  const tab = lever.an.pairs.find((p) => !p.concave && Math.abs(p.width - 5.0) < 0.05);
+  if (!slot || !tab) return 'no slot/tab';
+  a.mates = a.mates.filter((m) => m.b.part !== 'lever');
+  a.translatePart('lever', [0, 1.5, 0]);
+  a.setMode('mate');
+  a.mateTool = 'mid';
+  a.setMode('mate');
+  const pick = (part, pl) => ({ part, f: 'p' + pl });
+  a.midPick(pick('lever', tab.i));
+  a.midPick(pick('lever', tab.j));
+  a.midPick(pick('arm', slot.i));
+  a.midPick(pick('arm', slot.j));
+  const m = a.mates.find((x) => x.type === 'midplane' && x.b.part === 'lever');
+  a.setMode('select');
+  return m ? a.mateErr(m) : 'no mate';
+});
+check(typeof mid === 'number' && mid < 0.05, `mid-plane mate from 4 picked faces solves (${mid})`);
+
+// edge tool: hover a real edge of the base plate and click it
+await ev(() => { const a = window.app; a.mateTool = 'edge'; a.setMode('mate'); });
+const edgeScreen = await ev(() => {
+  const a = window.app;
+  const part = a.parts.get('upright');
+  // longest sharp edge of the upright plate (real geometry), midpoint -> world -> screen
+  const { mesh } = a.meshIndexOf(part);
+  let best = null;
+  for (let t = 0; t < mesh.T; t++) for (let k = 0; k < 3; k++) {
+    const o = mesh.adj[t * 3 + k];
+    if (o < t) continue;
+    const n1 = [0, 1, 2].map((i) => mesh.normals[t * 3 + i]), n2 = [0, 1, 2].map((i) => mesh.normals[o * 3 + i]);
+    if (n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] > 0.5) continue;
+    const va = mesh.tris[t * 3 + k], vb = mesh.tris[t * 3 + ((k + 1) % 3)];
+    const A = [0, 1, 2].map((i) => mesh.verts[va * 3 + i]), B = [0, 1, 2].map((i) => mesh.verts[vb * 3 + i]);
+    const L = Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]);
+    if (!best || L > best.L) best = { L, m: [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2, (A[2] + B[2]) / 2] };
+  }
+  const local = best.m;
+  const P = part.pose;
+  const w = [P[0] * local[0] + P[4] * local[1] + P[8] * local[2] + P[12], P[1] * local[0] + P[5] * local[1] + P[9] * local[2] + P[13], P[2] * local[0] + P[6] * local[1] + P[10] * local[2] + P[14]];
+  const v = a.viewer;
+  const V = new (v.camera.position.constructor)(w[0], w[1], w[2]).project(v.camera);
+  const r = v.renderer.domElement.getBoundingClientRect();
+  return [r.left + ((V.x + 1) / 2) * r.width, r.top + ((1 - V.y) / 2) * r.height];
+});
+await page.mouse.move(edgeScreen[0], edgeScreen[1]);
+await page.waitForTimeout(250);
+const lit = await ev(() => !!window.app.viewer._hoverLine);
+check(lit, 'edge tool highlights the straight edge under the cursor');
+await page.mouse.click(edgeScreen[0], edgeScreen[1]);
+await page.waitForTimeout(150);
+const picked = await ev(() => window.app.mateA && window.app.mateA.f.startsWith('e:'));
+check(picked, 'clicking the edge selects it for an edge-to-edge mate');
+await page.screenshot({ path: path.join(out, 'flow-edge.png') });
+await page.keyboard.press('Escape');
+
+// review: reject all options
+const rej = await ev(() => {
+  const a = window.app;
+  const p = a.parts.get('upright');
+  if (!p.alternatives.length) return 'no options';
+  const before = p.pose.slice();
+  a.rejectPlacement('upright');
+  return { status: p.status, moved: p.pose.some((v, i) => Math.abs(v - before[i]) > 1e-6), mates: a.mates.filter((m) => m.b.part === 'upright').length };
+});
+check(rej.status === 'unplaced' && rej.moved && rej.mates === 0, `"None of these" parks the part unmated (${JSON.stringify(rej)})`);
+await ev(() => window.app.undo());
+
 // measure mode
 await page.keyboard.press('d');
 await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
