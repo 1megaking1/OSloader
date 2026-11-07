@@ -83,7 +83,7 @@ export async function loadInputs(files, onStatus = () => {}) {
         } else if (lower.endsWith('.3mf')) {
           const list = await read3MF(new Uint8Array(ab));
           if (list.length === 1) bodies.push({ name: base, path: f.path, positions: list[0].positions, size: ab.byteLength });
-          else list.forEach((b, i) => bodies.push({ name: `${base} – ${b.name || i + 1}`, path: f.path + '#' + i, positions: b.positions, size: ab.byteLength }));
+          else list.forEach((b, i) => bodies.push({ name: b.name && !/^object \d+$/.test(b.name) ? b.name : `${base} – ${i + 1}`, path: f.path + '#' + i, positions: b.positions, size: ab.byteLength }));
         }
       } else {
         skipped.push(f.name);
