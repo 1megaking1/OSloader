@@ -75,6 +75,14 @@ export class WorkerHub {
       this.asm = lc;
     }
   }
+  goLocal() {
+    if (this.local) return;
+    this.local = true;
+    for (const c of [...this.pool, this.asm]) c.w && c.w.terminate();
+    const lc = new LocalClient();
+    this.pool = [lc];
+    this.asm = lc;
+  }
   get size() {
     return this.pool.length;
   }

@@ -5,7 +5,7 @@
 // unconstrained degrees of freedom stay where the user left them.
 
 import {
-  add, sub, scale, dot, cross, norm, len, reject, mMul, mPoint, mDir, mExp, mTranslation, mOrtho, eigSym3,
+  add, sub, scale, dot, cross, norm, len, reject, mMul, mPoint, mDir, mExp, mTranslation, mOrtho, eigSymN,
 } from './math.js';
 import { solveN } from './fit.js';
 
@@ -184,7 +184,7 @@ export function solvePart(ctx, moving, mates, opts = {}) {
   const pose = poseFrom(x);
   // per-mate residual magnitudes at solution
   const perMate = active.map((m) => mateError(ctx, m, moving, pose));
-  return { pose, perMate, active, cost, freeDOF: freeDOF(resid, x) };
+  return { pose, perMate, active, cost, freeDOF: freeDOF(resid, x, mPoint(pose, part.an.stats.centroid)) };
 }
 
 function jacobian(f, x, r0) {
@@ -212,14 +212,31 @@ export function mateError(ctx, m, moving = null, poseOverride = null) {
   return out.reduce((s, v) => Math.max(s, Math.abs(v)), 0);
 }
 
-/** Free directions of the constraint system (eigen analysis of J^T J without regularisation). */
-function freeDOF(f, x) {
+/**
+ * Free motions of the constraint system: null space of J^T J (without the
+ * regularisation rows). Each null vector is an instantaneous twist (w, v)
+ * about the part centroid c0. A twist with rotation is reported as an axis
+ * line {axis, point}; a pure translation as a direction.
+ */
+function freeDOF(f, x, c0) {
   const r0 = f(x);
   const J = jacobian(f, x, r0).slice(0, r0.length - 6);
-  const JtJ = (a, b) => J.reduce((s, row) => s + row[a] * row[b], 0);
-  const rot = eigSym3([JtJ(0, 0), JtJ(0, 1), JtJ(0, 2), JtJ(1, 1), JtJ(1, 2), JtJ(2, 2)]);
-  const tr = eigSym3([JtJ(3, 3), JtJ(3, 4), JtJ(3, 5), JtJ(4, 4), JtJ(4, 5), JtJ(5, 5)]);
-  const freeRot = rot.values.map((v, i) => ({ v, d: rot.vectors[i] })).filter((e) => e.v < 1e-6);
-  const freeTr = tr.values.map((v, i) => ({ v, d: tr.vectors[i] })).filter((e) => e.v < 1e-6);
-  return { rot: freeRot.map((e) => e.d), trans: freeTr.map((e) => e.d), count: freeRot.length + freeTr.length };
+  const N = Array.from({ length: 6 }, (_, a) => Array.from({ length: 6 }, (_, b) => J.reduce((s, row) => s + row[a] * row[b], 0)));
+  // scale rotation columns so both blocks are comparable (radians vs mm)
+  const e = eigSymN(N);
+  const maxv = Math.max(1e-12, e.values[5]);
+  const rot = [], trans = [];
+  for (let i = 0; i < 6; i++) {
+    if (e.values[i] > Math.max(1e-7, maxv * 1e-9)) continue;
+    const vec = e.vectors[i];
+    const w = [vec[0], vec[1], vec[2]], v = [vec[3], vec[4], vec[5]];
+    const wl = len(w);
+    if (wl > 1e-3 * Math.max(1, len(v)) / 50) {
+      const axis = scale(w, 1 / wl);
+      const point = add(c0, scale(cross(w, v), 1 / (wl * wl)));
+      rot.push({ axis, point });
+    } else trans.push(norm(v));
+  }
+  // de-duplicate (two null vectors may span the same rotation)
+  return { rot: rot.slice(0, 3), trans, count: rot.length + trans.length };
 }

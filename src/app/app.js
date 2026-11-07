@@ -312,7 +312,15 @@ export class App {
     await Promise.all(
       list.map(async (part) => {
         try {
-          const an = await this.hub.analyze(part.positions, {});
+          let an;
+          try {
+            an = await this.hub.analyze(part.positions, {});
+          } catch (err) {
+            if (this.hub.local || !/worker|security|script/i.test(String(err.message))) throw err;
+            console.warn('Worker failed, switching to main thread', err);
+            this.hub.goLocal();
+            an = await this.hub.analyze(part.positions, {});
+          }
           // keep a light copy (the heavy SDF goes to the assembler worker)
           const light = { ...an, sdf: { o: an.sdf.o, h: an.sdf.h, dims: an.sdf.dims }, samples: { n: an.samples.n, areaPer: an.samples.areaPer } };
           await this.hub.addPart({ id: part.id, name: part.name, an });
@@ -433,6 +441,7 @@ export class App {
     this.mates = this.mates.filter((m) => !m.auto);
     let k = 0;
     for (const m of res.mates) this.mates.push({ ...m, id: 'm' + Date.now().toString(36) + k++, auto: true, enabled: true });
+    for (const p of this.parts.values()) if (p.alternatives?.length > 1) this.collapseFreeAlternatives(p);
     this.viewer.setExplode(this.viewer.explode);
     this.viewer.fit();
     this.render();
@@ -672,6 +681,36 @@ export class App {
     this.status(`Option ${k + 1}/${p.alternatives.length} applied to ${p.name}. Use [ and ] to cycle, Enter to accept.`);
   }
 
+  /** drop alternatives that differ from an earlier one only by spinning about the part's free axis */
+  collapseFreeAlternatives(p) {
+    const fa = this.freeAxisOfPose(p);
+    if (!fa) return;
+    const keep = [];
+    for (const alt of p.alternatives) {
+      const dupe = keep.some((k) => {
+        const M = mMul(alt.W, mInvRigid(k.W));
+        // M must be a rotation about the free axis line
+        const q = mPoint(M, fa.point), q2 = mPoint(M, add(fa.point, scale(fa.axis, 10)));
+        return dist(q, fa.point) < 0.05 && dist(q2, add(fa.point, scale(fa.axis, 10))) < 0.05;
+      });
+      if (!dupe) keep.push(alt);
+    }
+    // the free axis is expressed for the current pose; alternatives far away are kept as-is
+    if (keep.length < p.alternatives.length) {
+      p.alternatives = keep;
+      p.altIndex = 0;
+      if (keep.length === 1 && p.status === 'ambiguous') p.status = 'placed';
+    }
+  }
+
+  freeAxisOfPose(p) {
+    try {
+      return this.freeAxisOf(p.id);
+    } catch {
+      return null;
+    }
+  }
+
   replaceAutoMates(id, mates) {
     this.mates = this.mates.filter((m) => !(m.auto && m.b.part === id));
     let k = 0;
@@ -730,7 +769,7 @@ export class App {
     const old = p.pose.slice();
     const res = solvePart(this.solveCtx(), id, mates);
     p.pose = res.pose;
-    p.freeDOF = { rot: res.freeDOF.rot, trans: res.freeDOF.trans };
+    p.freeDOF = res.freeDOF;
     this.viewer.setPose(id, p.pose);
     this.propagate(id, mMul(p.pose, mInvRigid(old)));
   }
@@ -813,24 +852,23 @@ export class App {
     this.render();
   }
 
-  /** the free rotation axis of a part (from its coaxial mate) if it has exactly one */
+  /** the free rotation axis of a part (e.g. a hinge on a single bore) if it has exactly one */
   freeAxisOf(id) {
     const p = this.parts.get(id);
-    if (!p) return null;
+    if (!p || !p.an) return null;
     const mates = this.mates.filter((m) => m.enabled !== false && m.b.part === id);
     if (!mates.length) return null;
-    const res = solvePart(this.solveCtx(), id, mates, { iters: 1 });
+    const res = solvePart(this.solveCtx(), id, mates, { iters: 0 });
     if (res.freeDOF.rot.length !== 1) return null;
-    const dir = res.freeDOF.rot[0];
-    // find a coaxial mate with matching axis for a meaningful pivot
+    const { axis, point } = res.freeDOF.rot[0];
+    // prefer the exact bore axis of a coaxial mate when it matches
     for (const m of mates) {
       if (m.type !== 'coaxial') continue;
       const a = this.parts.get(m.a.part);
-      const f = worldFeature(a.an, m.a.f, a.pose);
-      if (f && Math.abs(dot(f.a, dir)) > 0.99) return { axis: f.a, point: f.c, mate: m, slide: res.freeDOF.trans.length > 0 };
+      const f = a && worldFeature(a.an, m.a.f, a.pose);
+      if (f && Math.abs(dot(f.a, axis)) > 0.995) return { axis: f.a, point: f.c, mate: m, slide: res.freeDOF.trans.length > 0 };
     }
-    const c = mPoint(p.pose, p.an.stats.centroid);
-    return { axis: dir, point: c, mate: null, slide: res.freeDOF.trans.length > 0 };
+    return { axis, point, mate: null, slide: res.freeDOF.trans.length > 0 };
   }
 
   setGizmo(mode) {
@@ -873,6 +911,7 @@ export class App {
     if (record) this.snapshot();
     for (const p of this.parts.values()) {
       p.pose = mMul(M, p.pose);
+      if (p.alternatives) p.alternatives = p.alternatives.map((a) => ({ ...a, W: mMul(M, a.W) }));
       this.viewer.setPose(p.id, p.pose);
     }
     this.viewer.setExplode(this.viewer.explode);

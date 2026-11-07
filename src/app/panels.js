@@ -7,6 +7,13 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const f2 = (x) => (Math.abs(x) >= 100 ? x.toFixed(1) : x.toFixed(2));
 
+const SOURCE = {
+  'bore-pair': 'two bores/pegs',
+  'bore+angle': 'bore + rotation search',
+  rect: 'rectangular peg/hole',
+  face: 'matching faces',
+};
+
 const CHIP = {
   analyzing: 'analysing…',
   unplaced: 'not placed',
@@ -175,7 +182,10 @@ export function renderInspector(app) {
     if (p.status === 'root') how = 'Fixed base part – everything else is placed relative to it.';
     else if (p.status === 'version') how = 'Stacked onto another version of this part. Choose which to keep in the parts list.';
     else if (p.status === 'unplaced') how = 'No confident placement found. Try <b>Auto-place</b>, pick an option below, or add mates manually.';
-    else if (p.source) how = `Placed via <b>${esc(p.source)}</b>${p.from ? ` on ${esc(app.parts.get(p.from)?.name || p.from)}` : ''}${conf != null ? ` · confidence ${conf}%` : ''}.`;
+    else if (p.source) {
+      const confTxt = conf == null ? '' : p.status === 'ambiguous' ? ' · several near-equal options – please pick one' : ` · confidence ${conf < 34 ? 'low' : conf < 67 ? 'medium' : 'high'}`;
+      how = `Placed via <b>${esc(SOURCE[p.source] || p.source)}</b>${p.from ? ` on ${esc(app.parts.get(p.from)?.name || p.from)}` : ''}${confTxt}.`;
+    }
     else if (p.status === 'manual') how = 'Positioned manually.';
     out.push(`<div class="sec"><h3>Placement</h3><div class="hint">${how}</div>
       <div class="btnrow"><button class="small" data-a="autoplace" title="Find placements against the parts already placed">Auto-place</button><button class="small" data-a="snap" title="Infer mates with touching neighbours and snap exactly">Snap to neighbours</button>${p.status === 'ambiguous' ? '<button class="small primary" data-a="accept">Accept (Enter)</button>' : ''}</div>`);
@@ -185,7 +195,7 @@ export function renderInspector(app) {
         .map(
           (a, i) => `<div class="alt ${i === (p.altIndex ?? 0) ? 'cur' : ''}" data-alt="${i}" title="Hover to preview, click to apply">
           <span class="lbl">#${i + 1}</span><span class="bar"><i style="width:${Math.max(4, (a.score / max) * 100)}%"></i></span>
-          <span class="src">${esc(a.source || '')}${a.from ? ' · ' + esc(app.parts.get(a.from)?.name || a.from) : ''}</span></div>`,
+          <span class="src">${esc(SOURCE[a.source] || a.source || '')}${a.from ? ' · ' + esc(app.parts.get(a.from)?.name || a.from) : ''}</span></div>`,
         )
         .join('')}</div><div class="hint">[ ] cycles options</div>`);
     }
