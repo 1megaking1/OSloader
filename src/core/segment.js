@@ -161,96 +161,169 @@ function project(mesh, vids, u, v, out) {
   }
 }
 
+/** Incremental algebraic (Kasa) circle fit accumulator in a local 2D frame. */
+class CircleAcc {
+  constructor(ox, oy) {
+    this.ox = ox;
+    this.oy = oy;
+    this.n = 0;
+    this.sx = this.sy = this.sxx = this.syy = this.sxy = this.sxz = this.syz = this.sz = 0;
+  }
+  add(x, y) {
+    x -= this.ox;
+    y -= this.oy;
+    const z = x * x + y * y;
+    this.n++;
+    this.sx += x;
+    this.sy += y;
+    this.sxx += x * x;
+    this.syy += y * y;
+    this.sxy += x * y;
+    this.sxz += x * z;
+    this.syz += y * z;
+    this.sz += z;
+  }
+  solve() {
+    if (this.n < 3) return null;
+    const A = [
+      [this.sxx, this.sxy, this.sx],
+      [this.sxy, this.syy, this.sy],
+      [this.sx, this.sy, this.n],
+    ];
+    const d = det3(A);
+    if (Math.abs(d) < 1e-18 * Math.max(1, this.sxx * this.syy * this.n)) return null;
+    const b = [-this.sxz, -this.syz, -this.sz];
+    const D = det3(replaceCol(A, 0, b)) / d, E = det3(replaceCol(A, 1, b)) / d, F = det3(replaceCol(A, 2, b)) / d;
+    const cx = -D / 2, cy = -E / 2;
+    const r2 = cx * cx + cy * cy - F;
+    if (!(r2 > 0)) return null;
+    return { cx: cx + this.ox, cy: cy + this.oy, r: Math.sqrt(r2) };
+  }
+}
+function det3(m) {
+  return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+}
+function replaceCol(m, c, b) {
+  return m.map((row, i) => row.map((v, j) => (j === c ? b[i] : v)));
+}
+
 /**
  * Merge planar facet patches into cylinders.
  * @returns cylinders: {patches:[pid], a, c, r, t0, t1, span, concave, area, rms}
  */
 export function detectCylinders(mesh, patches, graph, opts = {}) {
   const maxDihedral = rad(opts.maxDihedralDeg ?? 46);
-  const minDihedral = rad(0.05);
+  const cosMax = Math.cos(maxDihedral), cosMin = Math.cos(rad(0.05));
   const perpTol = Math.sin(rad(opts.axisTolDeg ?? 2.5));
   const inCyl = new Int32Array(patches.length).fill(-1);
   const cyls = [];
   const diag = mesh.diag;
-  // Big patches are rarely part of a cylinder; process small ones as seeds first.
-  const seeds = patches
-    .map((p) => p.id)
-    .sort((a, b) => patches[a].area - patches[b].area);
+  const { verts } = mesh;
+  const seeds = patches.map((p) => p.id).sort((a, b) => patches[a].area - patches[b].area);
   const buf = new Float64Array(2 * mesh.V);
-
-  const tolFor = (r) => Math.max(0.004, r * 1.5e-3, diag * 1e-5);
+  const vStamp = new Int32Array(mesh.V).fill(-1);
+  const pStamp = new Int32Array(patches.length).fill(-1);
+  let stamp = 0;
+  const tolFor = (r) => Math.max(0.004, r * 4e-4, diag * 1e-5);
+  const okDihedral = (n1, n2) => {
+    const c = dot(n1, n2);
+    return c < cosMin && c > cosMax;
+  };
 
   for (const sid of seeds) {
     if (inCyl[sid] >= 0) continue;
     const P = patches[sid];
+    if (P.verts.length > 4000) continue;
     let found = null;
     for (const [qid] of graph[sid]) {
       if (inCyl[qid] >= 0) continue;
       const Q = patches[qid];
-      const cd = dot(P.n, Q.n);
-      const ang = Math.acos(Math.max(-1, Math.min(1, cd)));
-      if (ang < minDihedral || ang > maxDihedral) continue;
-      let a = norm(cross(P.n, Q.n));
+      if (Q.verts.length > 4000 || !okDihedral(P.n, Q.n)) continue;
+      const a = norm(cross(P.n, Q.n));
+      const [u, v] = basis(a);
+      const st = ++stamp;
+      const px = dot(P.c, u), py = dot(P.c, v);
+      const acc = new CircleAcc(px, py);
+      const vids = [];
+      const addVerts = (X) => {
+        for (const id of X.verts) {
+          if (vStamp[id] === st) continue;
+          vStamp[id] = st;
+          vids.push(id);
+          const k = id * 3;
+          acc.add(verts[k] * u[0] + verts[k + 1] * u[1] + verts[k + 2] * u[2], verts[k] * v[0] + verts[k + 1] * v[1] + verts[k + 2] * v[2]);
+        }
+      };
+      addVerts(P);
+      addVerts(Q);
+      let fit = acc.solve();
+      if (!fit || fit.r > diag * 2) continue;
       const region = [sid, qid];
-      const inRegion = new Set(region);
-      let vids = Array.from(new Set([...P.verts, ...Q.verts]));
-      let vidSet = new Set(vids);
-      let fit = null;
-      // frontier: [patch, via]
+      pStamp[sid] = st;
+      pStamp[qid] = st;
       const frontier = [];
       const pushNbrs = (pid) => {
-        for (const [x] of graph[pid]) if (!inRegion.has(x) && inCyl[x] < 0) frontier.push([x, pid]);
+        for (const [x] of graph[pid]) if (pStamp[x] !== st && inCyl[x] < 0) frontier.push(x, pid);
       };
       pushNbrs(sid);
       pushNbrs(qid);
-      const tried = new Set();
+      const rejected = new Set();
       while (frontier.length) {
-        const [x, via] = frontier.pop();
-        if (inRegion.has(x) || inCyl[x] >= 0) continue;
-        const key = x;
-        if (tried.has(key)) continue;
+        const via = frontier.pop(), x = frontier.pop();
+        if (pStamp[x] === st || inCyl[x] >= 0 || rejected.has(x)) continue;
         const X = patches[x];
-        if (Math.abs(dot(X.n, a)) > perpTol) continue;
-        const dvia = Math.acos(Math.max(-1, Math.min(1, dot(X.n, patches[via].n))));
-        if (dvia < minDihedral || dvia > maxDihedral) continue;
-        tried.add(key);
-        if (X.verts.length > 4000) continue;
-        const cand = vids.concat(X.verts.filter((v) => !vidSet.has(v)));
-        if (cand.length > buf.length / 2) continue;
-        const [u, v] = basis(a);
-        project(mesh, cand, u, v, buf);
-        const f = fitCircle2D(buf, cand.length);
-        if (!f || f.r > diag * 2) continue;
-        if (f.max > tolFor(f.r)) continue;
-        // accept
+        if (Math.abs(dot(X.n, a)) > perpTol || X.verts.length > 4000) {
+          rejected.add(x);
+          continue;
+        }
+        if (!okDihedral(X.n, patches[via].n)) continue;
+        // every new vertex must lie on the current circle
+        const tol = tolFor(fit.r);
+        let ok = true;
+        for (const id of X.verts) {
+          if (vStamp[id] === st) continue;
+          const k = id * 3;
+          const x2 = verts[k] * u[0] + verts[k + 1] * u[1] + verts[k + 2] * u[2] - fit.cx;
+          const y2 = verts[k] * v[0] + verts[k + 1] * v[1] + verts[k + 2] * v[2] - fit.cy;
+          if (Math.abs(Math.hypot(x2, y2) - fit.r) > tol) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) {
+          rejected.add(x);
+          continue;
+        }
         region.push(x);
-        inRegion.add(x);
-        vids = cand;
-        vidSet = new Set(cand);
-        fit = { ...f, u, v };
-        // re-estimate axis from all normals
-        a = axisFromNormals(
-          region.map((p) => patches[p].n),
-          region.map((p) => patches[p].area),
-        );
-        tried.clear();
+        pStamp[x] = st;
+        addVerts(X);
+        const nf = acc.solve();
+        if (nf) fit = nf;
         pushNbrs(x);
-        for (const r of region) pushNbrs(r);
       }
-      if (region.length >= 3 && fit) {
+      if (region.length >= 3) {
         found = { region, a, vids };
         break;
       }
     }
     if (!found) continue;
-    const cyl = finishCylinder(mesh, patches, found.region, found.a, found.vids, buf);
-    if (!cyl) continue;
+    // refine axis from the normals, then final fit
+    const a2 = axisFromNormals(
+      found.region.map((p) => patches[p].n),
+      found.region.map((p) => patches[p].area),
+    );
+    const cyl = finishCylinder(mesh, patches, found.region, dot(a2, found.a) < 0 ? scale3(a2, -1) : a2, found.vids, buf);
+    if (!cyl || cyl.r > diag * 2 || cyl.rms > tolFor(cyl.r) * 2) continue;
+    // very short bands of large radius are tessellation artefacts (spheres, fillets)
+    if (cyl.len < Math.max(0.15, 0.04 * cyl.r) || cyl.span < rad(25)) continue;
     cyl.id = cyls.length;
     for (const p of found.region) inCyl[p] = cyl.id;
     cyls.push(cyl);
   }
   return { cyls, inCyl };
 }
+
+const scale3 = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 
 function finishCylinder(mesh, patches, region, a, vids, buf) {
   const [u, v] = basis(a);
