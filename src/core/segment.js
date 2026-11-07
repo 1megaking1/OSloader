@@ -281,7 +281,8 @@ function finishCylinder(mesh, patches, region, a, vids, buf) {
   gaps.sort((x, y) => x - y);
   const maxGap = gaps.length ? gaps[gaps.length - 1] : 2 * Math.PI;
   const medGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
-  const full = maxGap <= medGap * 1.6 + 1e-6 && maxGap < Math.PI / 3;
+  const expected = (2 * Math.PI) / Math.max(3, region.length);
+  const full = maxGap < Math.PI / 3 && (maxGap <= medGap * 1.6 + 1e-6 || maxGap <= expected * 1.3);
   const span = full ? 2 * Math.PI : 2 * Math.PI - maxGap;
   // the start angle of the arc (for partial cylinders): angle after the biggest gap
   let arcStart = 0;

@@ -181,6 +181,8 @@ function worldBox(an, P, pad = 0) {
   return { lo, hi };
 }
 
+const baseOf = (id) => id.split('#')[0];
+
 const boxOverlap = (a, b) => a.lo[0] <= b.hi[0] && b.lo[0] <= a.hi[0] && a.lo[1] <= b.hi[1] && b.lo[1] <= a.hi[1] && a.lo[2] <= b.hi[2] && b.lo[2] <= a.hi[2];
 
 /** contribution of placed part X to the score of B at world pose W */
@@ -351,7 +353,7 @@ export function autoAssemble(parts, opts = {}) {
     for (const b of nodes) {
       if (placed.has(b.id)) continue;
       const list = cands.get(b.id) || [];
-      for (const h of relHyps(xid, b.id)) {
+      for (const h of relHyps(baseOf(xid), b.id)) {
         if (h.score < minScore * 0.5) continue;
         const W = mMul(PX, h.T);
         list.push({ W, from: xid, source: h.source, info: h.info, acc: null, pair: h.score, prior: h.prior || 0 });
@@ -391,21 +393,102 @@ export function autoAssemble(parts, opts = {}) {
   for (const [bid, list] of cands) for (const c of list) evalCand(bid, c);
 
   const placeOrder = [];
+  const ptsCache = new Map();
+  const samplePts = (B) => {
+    if (!ptsCache.has(B)) {
+      const pts = [];
+      for (let i = 0; i < B.samples.n; i += Math.max(1, Math.floor(B.samples.n / 64))) pts.push([B.samples.pos[i * 3], B.samples.pos[i * 3 + 1], B.samples.pos[i * 3 + 2]]);
+      ptsCache.set(B, pts);
+    }
+    return ptsCache.get(B);
+  };
+  /** best candidate for a part and its margin over the best *distinct* alternative */
+  const bestOf = (bid) => {
+    const B = byId.get(bid).an;
+    let b1 = null;
+    for (const c of cands.get(bid) || []) {
+      if (c.acc.penArea / B.stats.area > 0.06) continue;
+      if (!b1 || c.score > b1.score) b1 = c;
+    }
+    if (!b1) return null;
+    let b2 = 0;
+    for (const c of cands.get(bid)) {
+      if (c === b1 || c.score <= b2 || c.acc.penArea / B.stats.area > 0.06) continue;
+      if (samePlace(B, samplePts(B), c.W, b1.W)) continue;
+      b2 = c.score;
+    }
+    const margin = b1.score > 0 ? Math.max(0, (b1.score - b2) / b1.score) : 0;
+    return { c: b1, margin };
+  };
+  /** update pending candidates with a newly placed part, add its own candidates */
+  const afterPlace = (pid) => {
+    for (const [oid, list] of cands) {
+      if (placed.has(oid)) continue;
+      for (const x of list) addContribution(oid, x, pid);
+    }
+    const before = new Map(Array.from(cands, ([k, v]) => [k, v.length]));
+    addFrom(pid);
+    for (const [oid, list] of cands) {
+      if (placed.has(oid)) continue;
+      for (let i = before.get(oid) || 0; i < list.length; i++) evalCand(oid, list[i]);
+    }
+  };
+  /** extra copies for parts named like "pin_x4.stl", placed into free matching spots */
+  const placeInstances = (p) => {
+    const q = quantityFromName(p.name);
+    for (let k = 2; k <= q; k++) {
+      const iid = p.id + '#' + k;
+      const cl = [];
+      for (const [xid, PX] of placed) {
+        if (baseOf(xid) === p.id) continue;
+        for (const h of relHyps(baseOf(xid), p.id)) cl.push({ W: mMul(PX, h.T), from: xid, source: h.source, info: h.info, prior: h.prior || 0 });
+      }
+      ctx.parts.set(iid, { an: p.an, pose: mIdentity() });
+      byId.set(iid, { id: iid, name: p.name, an: p.an });
+      for (const c of cl) evalCand(iid, c);
+      const ok = cl.filter((c) => c.acc.penArea / p.an.stats.area < 0.04 && c.score >= minScore).sort((a, b) => b.score - a.score);
+      if (!ok.length) {
+        ctx.parts.delete(iid);
+        byId.delete(iid);
+        break;
+      }
+      const c = ok[0];
+      ctx.parts.get(iid).pose = c.W;
+      const mates = inferMates(ctx, iid, c.W, Array.from(placed.keys()), opt);
+      const snapped = snapPart(ctx, iid, mates);
+      ctx.parts.get(iid).pose = snapped.pose;
+      placed.set(iid, snapped.pose);
+      result.instances.push({ id: iid, of: p.id });
+      result.placements[iid] = { status: 'placed', score: c.score, from: c.from, source: c.source, alternatives: [], instanceOf: p.id };
+      result.mates.push(...snapped.mates.map((m) => ({ ...m })));
+      placeOrder.push(iid);
+      afterPlace(iid);
+    }
+  };
   for (;;) {
     let best = null;
-    for (const [bid, list] of cands) {
+    for (const [bid] of cands) {
       if (placed.has(bid)) continue;
-      for (const c of list) {
-        if (c.acc.penArea / byId.get(bid).an.stats.area > 0.06) continue;
-        if (!best || c.score > best.c.score) best = { bid, c };
-      }
+      const bo = bestOf(bid);
+      if (!bo || bo.c.score < minScore) continue;
+      // prefer confident placements; ambiguous parts wait until more context is placed
+      const key = bo.c.score * (0.6 + 0.4 * Math.min(1, bo.margin / 0.3));
+      if (!best || key > best.key) best = { bid, c: bo.c, key };
     }
-    if (!best || best.c.score < minScore) break;
+    if (!best) break;
     const { bid, c } = best;
+    if (opts.debug) {
+      const lines = [];
+      for (const [oid] of cands) {
+        if (placed.has(oid)) continue;
+        const bo = bestOf(oid);
+        if (bo) lines.push(`${oid}:${bo.c.score.toFixed(3)}/m${bo.margin.toFixed(2)}/${bo.c.from}`);
+      }
+      console.log('[place]', bid, c.score.toFixed(3), 'from', c.from, '| pending', lines.join(' '));
+    }
     // alternatives: distinct poses for this part
     const B = byId.get(bid).an;
-    const pts = [];
-    for (let i = 0; i < B.samples.n; i += Math.max(1, Math.floor(B.samples.n / 64))) pts.push([B.samples.pos[i * 3], B.samples.pos[i * 3 + 1], B.samples.pos[i * 3 + 2]]);
+    const pts = samplePts(B);
     const sorted = cands.get(bid).filter((x) => x.acc.penArea / B.stats.area <= 0.1).sort((x, y) => y.score - x.score);
     const alts = [];
     for (const x of sorted) {
@@ -440,56 +523,11 @@ export function autoAssemble(parts, opts = {}) {
       alternatives: alts.map((a) => ({ W: a.W, score: a.score, from: a.from, source: a.source, info: a.info })),
     };
     result.mates.push(...snapped.mates.map((m) => ({ ...m })));
-    // update other candidates with the newly placed part
-    for (const [oid, list] of cands) {
-      if (placed.has(oid)) continue;
-      for (const x of list) addContribution(oid, x, bid);
-    }
-    const before = new Map(Array.from(cands, ([k, v]) => [k, v.length]));
-    addFrom(bid);
-    for (const [oid, list] of cands) {
-      if (placed.has(oid)) continue;
-      for (let i = before.get(oid) || 0; i < list.length; i++) evalCand(oid, list[i]);
-    }
+    afterPlace(bid);
+    if (opts.autoInstances !== false) placeInstances(byId.get(bid));
     progress({ stage: 'placing', done: placed.size, total: nodes.length });
   }
   result.order.push(...placeOrder);
-
-  // 5. instances (quantity in file name)
-  if (opts.autoInstances !== false) {
-    for (const p of nodes) {
-      if (!placed.has(p.id) || p.id === root) continue;
-      const q = quantityFromName(p.name);
-      for (let k = 2; k <= q; k++) {
-        const iid = p.id + '#' + k;
-        const cl = [];
-        for (const [xid, PX] of placed) {
-          const baseX = xid.split('#')[0];
-          if (baseX === p.id) continue;
-          for (const h of relHyps(baseX, p.id)) cl.push({ W: mMul(PX, h.T), from: xid, source: h.source, info: h.info, prior: h.prior || 0 });
-        }
-        ctx.parts.set(iid, { an: p.an, pose: mIdentity() });
-        byId.set(iid, { id: iid, name: p.name, an: p.an });
-        for (const c of cl) evalCand(iid, c);
-        const ok = cl.filter((c) => c.acc.penArea / p.an.stats.area < 0.04 && c.score >= minScore).sort((a, b) => b.score - a.score);
-        if (!ok.length) {
-          ctx.parts.delete(iid);
-          byId.delete(iid);
-          break;
-        }
-        const c = ok[0];
-        ctx.parts.get(iid).pose = c.W;
-        const mates = inferMates(ctx, iid, c.W, Array.from(placed.keys()), opt);
-        const snapped = snapPart(ctx, iid, mates);
-        ctx.parts.get(iid).pose = snapped.pose;
-        placed.set(iid, snapped.pose);
-        result.instances.push({ id: iid, of: p.id });
-        result.placements[iid] = { status: 'placed', score: c.score, from: c.from, source: c.source, alternatives: [], instanceOf: p.id };
-        result.mates.push(...snapped.mates.map((m) => ({ ...m })));
-        result.order.push(iid);
-      }
-    }
-  }
 
   // 6. versions stacked on their representative
   for (const g of groups) {

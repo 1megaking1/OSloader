@@ -8,7 +8,7 @@
 import {
   add, sub, scale, dot, cross, norm, len, dist, rad, deg,
   mMul, mInvRigid, mPoint, mDir, mFromBasis, mAxisAngle, mTranslation, mIdentity, mRotAngle,
-  reject, kabsch,
+  reject, kabsch, eigSym3,
 } from './math.js';
 import { sdfSample, sdfSampleGrad } from './sdf.js';
 
@@ -19,8 +19,10 @@ export const DEFAULTS = {
   maxPress: 0.15, // mm: max interference for press fits
   slotClearance: 1.2, // mm: max total clearance tab-in-slot
   angTol: 2, // degrees
-  penWeight: 3,
-  featWeight: 0.06,
+  stackGap: 6, // mm: max axial gap between two coaxial bores (screw through both)
+  penWeight: 8,
+  featWeight: 0.1,
+  flatWeight: 0.5, // weight of contact along the single dominant normal direction
 };
 
 const _g = [0, 0, 0, 0];
@@ -29,36 +31,88 @@ const _g = [0, 0, 0, 0];
 
 /**
  * Score samples of one part against the SDF of the other.
- * T maps sample coordinates into the SDF's frame.
+ * T maps sample coordinates into the SDF's frame. Only samples whose grid
+ * cells overlap the SDF's box (mapped back into the sample frame) are tested.
  */
 function sampleScore(sdf, samples, T, opt, stride = 1) {
-  const { pos, nor, n } = samples;
-  let contact = 0, pen = 0, depth = 0, cnt = 0;
+  const { pos, nor, grid } = samples;
+  let contact = 0, pen = 0, depth = 0, coin = 0;
+  const S = [0, 0, 0, 0, 0, 0];
   const ct = opt.contactTol, pt = opt.penTol;
-  for (let i = 0; i < n; i += stride) {
-    const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
-    const px = T[0] * x + T[4] * y + T[8] * z + T[12];
-    const py = T[1] * x + T[5] * y + T[9] * z + T[13];
-    const pz = T[2] * x + T[6] * y + T[10] * z + T[14];
-    cnt++;
-    const d = sdfSample(sdf, px, py, pz);
-    if (d < -pt) {
-      pen++;
-      depth += Math.min(-d, 5);
-    } else if (d < ct) {
-      sdfSampleGrad(sdf, px, py, pz, _g);
-      const gl = Math.hypot(_g[1], _g[2], _g[3]);
-      if (gl > 1e-9) {
-        const nx = nor[i * 3], ny = nor[i * 3 + 1], nz = nor[i * 3 + 2];
-        const wx = T[0] * nx + T[4] * ny + T[8] * nz;
-        const wy = T[1] * nx + T[5] * ny + T[9] * nz;
-        const wz = T[2] * nx + T[6] * ny + T[10] * nz;
-        if ((wx * _g[1] + wy * _g[2] + wz * _g[3]) / gl < -0.5) contact++;
+  // SDF box in sample-local coordinates
+  const Ti = mInvRigid(T);
+  const o = sdf.o, h = sdf.h, dm = sdf.dims;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let c = 0; c < 8; c++) {
+    const p = mPoint(Ti, [o[0] + (c & 1 ? dm[0] * h : 0), o[1] + (c & 2 ? dm[1] * h : 0), o[2] + (c & 4 ? dm[2] * h : 0)]);
+    for (let k = 0; k < 3; k++) {
+      if (p[k] < lo[k]) lo[k] = p[k];
+      if (p[k] > hi[k]) hi[k] = p[k];
+    }
+  }
+  const g = grid;
+  const r0 = [0, 1, 2].map((k) => Math.max(0, Math.floor((lo[k] - g.o[k]) / g.cs)));
+  const r1 = [0, 1, 2].map((k) => Math.min(g.dims[k] - 1, Math.floor((hi[k] - g.o[k]) / g.cs)));
+  let tick = 0;
+  for (let iz = r0[2]; iz <= r1[2]; iz++) {
+    for (let iy = r0[1]; iy <= r1[1]; iy++) {
+      for (let ix = r0[0]; ix <= r1[0]; ix++) {
+        const cidx = ix + g.dims[0] * (iy + g.dims[1] * iz);
+        for (let q = g.start[cidx]; q < g.start[cidx + 1]; q++) {
+          if (stride > 1 && tick++ % stride) continue;
+          const i = g.idx[q];
+          const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+          const px = T[0] * x + T[4] * y + T[8] * z + T[12];
+          const py = T[1] * x + T[5] * y + T[9] * z + T[13];
+          const pz = T[2] * x + T[6] * y + T[10] * z + T[14];
+          const d = sdfSample(sdf, px, py, pz);
+          if (d < -pt) {
+            pen++;
+            depth += Math.min(-d, 5);
+          } else if (d < ct) {
+            sdfSampleGrad(sdf, px, py, pz, _g);
+            const gl = Math.hypot(_g[1], _g[2], _g[3]);
+            if (gl > 1e-9) {
+              const nx = nor[i * 3], ny = nor[i * 3 + 1], nz = nor[i * 3 + 2];
+              const wx = T[0] * nx + T[4] * ny + T[8] * nz;
+              const wy = T[1] * nx + T[5] * ny + T[9] * nz;
+              const wz = T[2] * nx + T[6] * ny + T[10] * nz;
+              const cosn = (wx * _g[1] + wy * _g[2] + wz * _g[3]) / gl;
+              // same-facing coincident surface: the two solids overlap here
+              if (cosn > 0.7 && d > -pt && d < Math.min(ct, 0.2)) coin++;
+              if (cosn < -0.5) {
+                contact++;
+                S[0] += wx * wx;
+                S[1] += wx * wy;
+                S[2] += wx * wz;
+                S[3] += wy * wy;
+                S[4] += wy * wz;
+                S[5] += wz * wz;
+              }
+            }
+          }
+        }
       }
     }
   }
-  const f = n / cnt;
-  return { contact: contact * f, pen: pen * f, depth: depth * f };
+  return { contact: contact * stride, pen: (pen + coin) * stride, coin: coin * stride, depth: depth * stride, S: S.map((v) => v * stride) };
+}
+
+/** rotate symmetric scatter matrix S (6 comps) by rotation part of M: R S R^T */
+function rotScatter(S, M) {
+  const A = [
+    [S[0], S[1], S[2]],
+    [S[1], S[3], S[4]],
+    [S[2], S[4], S[5]],
+  ];
+  const R = [
+    [M[0], M[4], M[8]],
+    [M[1], M[5], M[9]],
+    [M[2], M[6], M[10]],
+  ];
+  const RA = R.map((row) => [0, 1, 2].map((j) => row[0] * A[0][j] + row[1] * A[1][j] + row[2] * A[2][j]));
+  const O = RA.map((row) => [0, 1, 2].map((j) => row[0] * R[j][0] + row[1] * R[j][1] + row[2] * R[j][2]));
+  return [O[0][0], O[0][1], O[0][2], O[1][1], O[1][2], O[2][2]];
 }
 
 /** Score pose T (B -> A). Returns normalised score and raw parts. */
@@ -69,12 +123,27 @@ export function evalPose(A, B, T, opt = DEFAULTS, stride = 1) {
   const cB = sB.contact * B.samples.areaPer, cA = sA.contact * A.samples.areaPer;
   const pB = sB.pen * B.samples.areaPer, pA = sA.pen * A.samples.areaPer;
   const base = Math.min(A.stats.area, B.stats.area);
-  const contact = (cA + cB) / 2 / base;
-  const pen = (pA + pB) / base;
-  return { contact, pen, contactArea: (cA + cB) / 2, penArea: pA + pB, score: contact - opt.penWeight * pen };
+  // contact normal scatter in A's frame (B side is already in A frame)
+  const SA = rotScatter(sA.S, T);
+  // weight each side by sampling density (inverse variance of a counting estimate)
+  const wB = 1 / (B.samples.areaPer * B.samples.areaPer), wA = 1 / (A.samples.areaPer * A.samples.areaPer);
+  const fB = wB / (wA + wB), fA = wA / (wA + wB);
+  const M6 = [0, 1, 2, 3, 4, 5].map((k) => sB.S[k] * B.samples.areaPer * fB + SA[k] * A.samples.areaPer * fA);
+  const ev = eigSym3(M6).values; // ascending
+  // interlock weighting: contact that all faces one direction is weaker evidence
+  const lam = ev.map((v) => Math.max(0, v));
+  const weighted = opt.flatWeight * lam[2] + lam[1] + lam[0];
+  const raw = cA * fA + cB * fB;
+  const contactArea = raw > 0 ? weighted * (raw / Math.max(1e-9, lam[0] + lam[1] + lam[2])) : 0;
+  const contact = contactArea / base;
+  const pen = Math.max(pA, pB) / base;
+  return { contact, pen, contactArea, rawContact: raw / base, penArea: Math.max(pA, pB), score: contact - opt.penWeight * pen };
 }
 
 // ------------------------------------------------------------ utilities
+
+/** Typical printed fits are 0.05-0.3 mm radial; looser fits are less likely to be intended. */
+export const clearanceWeight = (cl) => (cl <= 0.3 ? 1 : Math.max(0.35, 1 - (cl - 0.3) * 1.2));
 
 const usableCyl = (c) => c.span >= rad(150) && c.r >= 0.4 && c.len >= 0.4;
 
@@ -141,13 +210,14 @@ export function featureMatches(A, B, T, opt = DEFAULTS) {
       if (d > 0.3) continue;
       const ov = axialOverlap(w, ca);
       if (kind === 'insert' && ov < Math.min(0.5, 0.3 * Math.min(cb.len, ca.len))) continue;
-      if (kind === 'stack' && (ov < -1.0 || ov > 0.3 * Math.min(cb.len, ca.len))) continue;
-      if (!best || d < best.d) best = { ca, d, kind };
+      if (kind === 'stack' && (ov < -opt.stackGap || ov > 0.3 * Math.min(cb.len, ca.len))) continue;
+      const wgt = kind === 'insert' ? 3 * clearanceWeight(Math.abs(ca.r - cb.r)) : 1.5 * Math.exp(-Math.max(0, -ov) / 4);
+      if (!best || wgt - d > best.wgt - best.d) best = { ca, d, kind, wgt };
     }
     if (best) {
       usedA.add('c' + best.ca.id);
       mates.push({ type: 'coaxial', a: 'c' + best.ca.id, b: 'c' + cb.id, kind: best.kind, err: best.d });
-      score += best.kind === 'insert' ? 3 : 1.5;
+      score += best.wgt;
     }
   }
   // tab / slot centring
@@ -240,14 +310,14 @@ function axialShifts(A, B, T, ax, checks, opt) {
       lo = Math.max(lo, aLo - (tb + w.len / 2) + need);
       hi = Math.min(hi, aHi - (tb - w.len / 2) - need);
     } else {
-      lo = Math.max(lo, aLo - (tb + w.len / 2) - 1.0);
-      hi = Math.min(hi, aHi - (tb - w.len / 2) + 1.0);
+      lo = Math.max(lo, aLo - (tb + w.len / 2) - opt.stackGap);
+      hi = Math.min(hi, aHi - (tb - w.len / 2) + opt.stackGap);
     }
   }
   if (lo > hi) return [];
   let cands = shifts.filter((x) => x.s >= lo - 1e-6 && x.s <= hi + 1e-6);
   // fallbacks: centre of the engagement window
-  if (isFinite(lo) && isFinite(hi)) cands.push({ s: (lo + hi) / 2, kind: 'centre', w: 0 });
+  if (isFinite(lo) && isFinite(hi)) cands.push({ s: (lo + hi) / 2, kind: 'centre', w: 1e5 });
   else if (!cands.length) cands.push({ s: 0, kind: 'none', w: 0 });
   // dedupe
   cands.sort((a, b) => a.s - b.s);
@@ -497,7 +567,7 @@ export function revolutionSymmetric(B, c) {
 }
 
 function genSingleCyl(A, B, opt, push) {
-  const cb = B.cyls.filter((c) => usableCyl(c) && c.full).sort((x, y) => y.r * y.len - x.r * x.len).slice(0, 3);
+  const cb = B.cyls.filter((c) => usableCyl(c) && (c.full || c.span > rad(240))).sort((x, y) => y.r * y.len - x.r * x.len).slice(0, 3);
   if (!cb.length) return;
   const ca = A.cyls.filter((c) => usableCyl(c));
   const cosT = Math.cos(rad(3));
@@ -512,7 +582,7 @@ function genSingleCyl(A, B, opt, push) {
         const T0 = frameMap(a.c, xa, zA, b.c, xb, b.a);
         // candidate angles: align B planes (normal perpendicular to axis) with A planes
         const angs = new Set();
-        for (let k = 0; k < 12; k++) angs.add(Math.round(((k * 30) % 360) * 10) / 10);
+        for (let k = 0; k < 12; k++) angs.add(k * 30);
         const Tb = T0;
         for (const pb of B.planes) {
           const nb = mDir(Tb, pb.n);
@@ -523,23 +593,27 @@ function genSingleCyl(A, B, opt, push) {
               // angle about zA rotating nb onto target
               const x1 = norm(reject(nb, zA)), x2 = norm(reject(target, zA));
               const ang = Math.atan2(dot(cross(x1, x2), zA), dot(x1, x2));
-              angs.add(Math.round(((deg(ang) + 360) % 360) * 10) / 10);
+              angs.add(Math.round(((deg(ang) + 360) % 360) * 2) / 2);
             }
           }
         }
-        const angList = revolutionSymmetric(B, b) ? [0] : Array.from(angs).slice(0, 72);
+        // plane-alignment angles first (exact), then the uniform sweep
+        const all = Array.from(angs);
+        const uniform = all.slice(0, 12), aligned = all.slice(12);
+        const angList = revolutionSymmetric(B, b) ? [0] : aligned.slice(0, 36).concat(uniform);
         const local = [];
         for (const ad of angList) {
           const R = mAxisAngle(zA, rad(ad), a.c);
           const T1 = mMul(R, T0);
           const checks = [{ cb: b, ca: a, kind }];
-          for (const sh of axialShifts(A, B, T1, zA, checks, opt)) {
+          const shifts = axialShifts(A, B, T1, zA, checks, opt).sort((x, y) => y.w - x.w).slice(0, 6);
+          for (const sh of shifts) {
             const T = shiftT(T1, zA, sh.s);
             local.push({ T, ad, sh: sh.kind });
           }
         }
         // cheap prescreen to cap the count for this correspondence
-        for (const l of local) l.q = evalPose(A, B, l.T, opt, 4).score + shiftPrior(l.sh);
+        for (const l of local) l.q = evalPose(A, B, l.T, opt, 12).score + shiftPrior(l.sh);
         local.sort((x, y) => y.q - x.q);
         for (const l of local.slice(0, 8)) push(l.T, 'bore+angle', { angle: l.ad, shift: l.sh, free: 'angle' });
       }
@@ -558,14 +632,17 @@ export function pairHypotheses(A, B, opt0 = {}) {
   const raw = [];
   const push = (T, source, info) => raw.push({ T, source, info });
   genCylPairs(A, B, opt, push);
+  const nPairHyps = raw.length;
   genRects(A, B, opt, push);
   genFaces(A, B, opt, push);
-  genSingleCyl(A, B, opt, push);
+  // single bore + rotation sweep: for parts that cannot be located by two bores
+  const fullB = B.cyls.filter((c) => usableCyl(c) && c.full).length;
+  if (fullB < 2 || nPairHyps === 0 || opt.alwaysSweep) genSingleCyl(A, B, opt, push);
   if (!raw.length) return [];
-  // prescreen with subsampled scoring
-  for (const h of raw) h.pre = evalPose(A, B, h.T, opt, 4).score;
+  // prescreen with subsampled scoring plus feature evidence
+  for (const h of raw) h.pre = evalPose(A, B, h.T, opt, 4).score + opt.featWeight * featureMatches(A, B, h.T, opt).score;
   raw.sort((a, b) => b.pre - a.pre);
-  const top = raw.slice(0, opt.maxFull ?? 40);
+  const top = raw.slice(0, opt.maxFull ?? 48);
   for (const h of top) {
     const e = evalPose(A, B, h.T, opt, 1);
     const fm = featureMatches(A, B, h.T, opt);

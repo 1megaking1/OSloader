@@ -57,7 +57,8 @@ export function analyzePart(positions, opts = {}) {
   for (const c of cyls) if (!c.concave && c.full) thickness = Math.min(thickness, 2 * c.r);
   const sdf = computeSDF(mesh, { thickness: isFinite(thickness) ? Math.max(thickness, 0.8) : undefined, ...(opts.sdf || {}) });
 
-  const samples = sampleSurface(mesh, opts.samples ?? 1600, 12345);
+  const nSamples = opts.samples ?? Math.round(Math.min(12000, Math.max(1500, mesh.area / 2.0)));
+  const samples = sampleSurface(mesh, nSamples, 12345);
 
   // triangle -> feature maps in ORIGINAL soup order (for picking in the UI)
   const triCount = positions.length / 9;
@@ -455,5 +456,29 @@ export function sampleSurface(mesh, N, seed) {
       nor[i * 3 + k] = normals[t * 3 + k];
     }
   }
-  return { pos, nor, areaPer: a / N, n: N };
+  return { pos, nor, areaPer: a / N, n: N, grid: sampleGrid(pos, N, mesh) };
+}
+
+/** Bucket samples into a coarse grid so scoring can skip far-away samples. */
+function sampleGrid(pos, N, mesh) {
+  const { min, max } = mesh.bbox;
+  const cs = Math.max(mesh.diag / 14, 1);
+  const dims = [0, 1, 2].map((k) => Math.max(1, Math.ceil((max[k] - min[k]) / cs) + 1));
+  const o = [min[0] - cs * 0.5, min[1] - cs * 0.5, min[2] - cs * 0.5];
+  const nc = dims[0] * dims[1] * dims[2];
+  const cell = new Int32Array(N);
+  const count = new Int32Array(nc + 1);
+  for (let i = 0; i < N; i++) {
+    const ix = Math.min(dims[0] - 1, Math.max(0, Math.floor((pos[i * 3] - o[0]) / cs)));
+    const iy = Math.min(dims[1] - 1, Math.max(0, Math.floor((pos[i * 3 + 1] - o[1]) / cs)));
+    const iz = Math.min(dims[2] - 1, Math.max(0, Math.floor((pos[i * 3 + 2] - o[2]) / cs)));
+    const c = ix + dims[0] * (iy + dims[1] * iz);
+    cell[i] = c;
+    count[c + 1]++;
+  }
+  for (let c = 0; c < nc; c++) count[c + 1] += count[c];
+  const fill = count.slice(0, nc);
+  const idx = new Int32Array(N);
+  for (let i = 0; i < N; i++) idx[fill[cell[i]]++] = i;
+  return { o, cs, dims, start: count, idx };
 }

@@ -57,7 +57,7 @@ function writeKit(name, parts, seed) {
     // truth pose maps FILE coordinates -> assembled coordinates
     const poses = [mInvRigid(L)];
     for (const extra of p.instances || []) poses.push(mMul(extra, mInvRigid(L)));
-    truth.parts[p.file] = { poses, role: p.role || 'part', versionOf: p.versionOf || null, note: p.note || '', freeAxis: p.freeAxis || null, symmetricAlt: !!p.symmetricAlt };
+    truth.parts[p.file] = { poses, role: p.role || 'part', versionOf: p.versionOf || null, note: p.note || '', freeAxis: p.freeAxis || null, symmetricAlt: !!p.symmetricAlt, expectUnplaced: !!p.expectUnplaced };
   }
   fs.writeFileSync(path.join(dir, 'truth.json'), JSON.stringify(truth, null, 1));
   console.log('wrote', name, parts.length, 'parts');
@@ -166,6 +166,80 @@ function splitPropKit() {
   ];
 }
 
+
+// ------------------------------------------------------------------ kit 3
+function enclosureKit() {
+  const W = 120, D = 80, H = 40, t = 2;
+  // box: open top shell with corner screw bosses, floor pegs, feet holes
+  let box = cube([W, D, H], false).translate([-W / 2, -D / 2, 0]);
+  box = box.subtract(cube([W - 2 * t, D - 2 * t, H], false).translate([-W / 2 + t, -D / 2 + t, t]));
+  const bosses = [[-50, -30], [50, -30], [-50, 30], [50, 30]];
+  for (const [x, y] of bosses) {
+    box = box.add(cyl(H - t - 3, 4, 48).translate([x, y, t - 0.01]));
+    box = box.subtract(cyl(20, 1.25, 16).translate([x, y, 15]));
+  }
+  // standoff pegs on the floor
+  const so = [[-25, -15], [25, -15], [-25, 15], [25, 15]];
+  for (const [x, y] of so) box = box.add(cyl(5, 1.4, 24).translate([x, y, t - 0.01]));
+  // feet holes in the bottom (blind from below)
+  const feet = [[-45, -25], [45, -25], [-45, 25], [45, 25]];
+  for (const [x, y] of feet) box = box.subtract(cyl(1.5, 2.1, 24).translate([x, y, -0.01]));
+  // side hole for a light pipe
+  box = box.subtract(cyl(10, 1.6, 20).rotate([0, 90, 0]).translate([W / 2 - 5, 0, 25]));
+  // D-shaft boss on the front wall (outside), axis -y
+  let dshaft = cyl(16, 3, 64).rotate([90, 0, 0]).translate([30, -D / 2 + 0.01, 25]);
+  dshaft = dshaft.subtract(cube([10, 30, 10], false).translate([30 - 5, -D / 2 - 25, 25 + 2]));
+  box = box.add(dshaft);
+
+  // lid: plate with a lip that fits inside the opening (0.2 clearance), 4 countersunk holes, button hole
+  const lidOf = (cl) => {
+    let lid = cube([W, D, 3], false).translate([-W / 2, -D / 2, H]);
+    let lip = cube([W - 2 * t - 2 * cl, D - 2 * t - 2 * cl, 3], false).translate([-W / 2 + t + cl, -D / 2 + t + cl, H - 3 + 0.01]);
+    lip = lip.subtract(cube([W - 2 * t - 2 * cl - 3, D - 2 * t - 2 * cl - 3, 10], false).translate([-W / 2 + t + cl + 1.5, -D / 2 + t + cl + 1.5, H - 5]));
+    // notch the lip around the bosses
+    for (const [x, y] of bosses) lip = lip.subtract(cyl(10, 5, 32).translate([x, y, H - 6]));
+    lid = lid.add(lip);
+    for (const [x, y] of bosses) {
+      lid = lid.subtract(cyl(4, 1.7, 20).translate([x, y, H - 1]));
+      lid = lid.subtract(Manifold.cylinder(1.8, 1.7, 3.3, 20).translate([x, y, H + 1.21]));
+    }
+    lid = lid.subtract(cyl(10, 4.2, 40).translate([0, 0, H - 5]));
+    return lid;
+  };
+  const lid = lidOf(0.2), lidTight = lidOf(0.1);
+  // button: shaft Ø8 through the lid hole, flange under the lid
+  let button = cyl(9, 4.0, 40).translate([0, 0, H - 0.5]);
+  button = button.add(cyl(1.5, 6, 40).translate([0, 0, H - 1.5]));
+  // standoffs: Ø6 tube with Ø3 hole sitting on the floor pegs
+  const standoff = cyl(8, 3, 32).subtract(cyl(20, 1.5, 24).translate([0, 0, -5])).translate([so[0][0], so[0][1], t]);
+  const soInst = so.slice(1).map(([x, y]) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x - so[0][0], y - so[0][1], 0, 1]);
+  // foot: Ø12 disc with Ø4 peg up into the bottom
+  const foot = cyl(3, 6, 48).translate([0, 0, -3]).add(cyl(1.3, 2, 24).translate([0, 0, -0.01])).translate([feet[0][0], feet[0][1], 0]);
+  const footInst = feet.slice(1).map(([x, y]) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x - feet[0][0], y - feet[0][1], 0, 1]);
+  // knob with a D hole on the D shaft
+  let knob = cyl(12, 9, 72).rotate([90, 0, 0]).translate([30, -D / 2 - 8, 25]);
+  knob = knob.add(cube([2, 12, 6], false).translate([29, -D / 2 - 20, 31])); // pointer
+  let dhole = cyl(9, 3.1, 64).rotate([90, 0, 0]).translate([30, -D / 2 - 7, 25]);
+  dhole = dhole.subtract(cube([10, 30, 10], false).translate([25, -D / 2 - 25, 25 + 2.1]));
+  knob = knob.subtract(dhole);
+  // light pipe through the side hole, with a head outside
+  const pipe = cyl(12, 1.5, 20).rotate([0, 90, 0]).translate([W / 2 - 8, 0, 25]).add(cyl(2, 2.5, 24).rotate([0, 90, 0]).translate([W / 2, 0, 25]));
+  // badge: organic blob glued on the lid top (no mating features)
+  const badge = Manifold.sphere(10, 48).scale([1.5, 0.8, 0.3]).translate([0, 20, H + 3 + 1]).intersect(cube([200, 200, 100], false).translate([-100, -100, H + 3]));
+  return [
+    { file: 'enclosure_box.stl', m: box, role: 'root' },
+    { file: 'lid.stl', m: lid },
+    { file: 'lid_tight.stl', m: lidTight, versionOf: 'lid.stl' },
+    { file: 'button.stl', m: button, note: 'flange above or below the lid is ambiguous', symmetricAlt: true },
+    { file: 'standoff_x4.stl', m: standoff, instances: soInst },
+    { file: 'foot (4x).stl', m: foot, instances: footInst },
+    { file: 'knob.stl', m: knob },
+    { file: 'light_pipe.stl', m: pipe, note: 'also fits the lid screw holes: ambiguous', symmetricAlt: true },
+    { file: 'badge.stl', m: badge, note: 'no mating features: expected to stay unplaced', expectUnplaced: true },
+  ];
+}
+
 fs.mkdirSync(OUT, { recursive: true });
 writeKit('bracket', bracketKit(), 7);
 writeKit('splitprop', splitPropKit(), 11);
+writeKit('enclosure', enclosureKit(), 23);

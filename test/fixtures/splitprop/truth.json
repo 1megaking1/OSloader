@@ -25,7 +25,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "receiver_right.stl": {
    "poses": [
@@ -52,7 +53,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "barrel_tip.stl": {
    "poses": [
@@ -79,7 +81,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "scope.stl": {
    "poses": [
@@ -106,7 +109,8 @@
    "versionOf": null,
    "note": "pocket is symmetric: 180 deg flip is ambiguous",
    "freeAxis": null,
-   "symmetricAlt": true
+   "symmetricAlt": true,
+   "expectUnplaced": false
   },
   "alignment_pin_x4.stl": {
    "poses": [
@@ -187,7 +191,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   }
  }
 }

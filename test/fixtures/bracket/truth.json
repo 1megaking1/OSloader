@@ -25,7 +25,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "arm.stl": {
    "poses": [
@@ -52,7 +53,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "arm_v2.stl": {
    "poses": [
@@ -79,7 +81,8 @@
    "versionOf": "arm.stl",
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "lever.stl": {
    "poses": [
@@ -117,7 +120,8 @@
      0
     ]
    },
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "pin.stl": {
    "poses": [
@@ -144,7 +148,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   },
   "key.stl": {
    "poses": [
@@ -171,7 +176,8 @@
    "versionOf": null,
    "note": "top/bottom insertion is genuinely ambiguous",
    "freeAxis": null,
-   "symmetricAlt": true
+   "symmetricAlt": true,
+   "expectUnplaced": false
   },
   "upright.stl": {
    "poses": [
@@ -198,7 +204,8 @@
    "versionOf": null,
    "note": "",
    "freeAxis": null,
-   "symmetricAlt": false
+   "symmetricAlt": false,
+   "expectUnplaced": false
   }
  }
 }

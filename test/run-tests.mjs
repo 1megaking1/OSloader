@@ -72,7 +72,7 @@ for (const kit of fs.readdirSync(FIX)) {
     const isOk = (e) => e.mean < 0.05 && e.max < 0.6;
     const pl = res.placements[id];
     const e = errOf(res.poses[id]);
-    let ok = isOk(e);
+    let ok = isOk(e) || (tp.expectUnplaced && pl.status === 'unplaced');
     let tag = ok ? 'OK  ' : 'FAIL';
     if (!ok && pl.alternatives) {
       const k = pl.alternatives.findIndex((a) => isOk(errOf(a.W)));
