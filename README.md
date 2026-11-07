@@ -4,7 +4,7 @@ Drag-and-drop a whole kit of STL parts, laid flat for printing, and get one asse
 
 It is a CAD-style assembly workflow made for STLs, where most CAD tools are painful.
 
-![Enclosure kit auto-assembled (exploded view)](docs/screenshot-enclosure.png)
+![A real 18-part nerf blaster kit auto-assembled: 90-degree aligned parts, both rail variants stacked, grip scales matched flat-to-flat](docs/screenshot-blaster.png)
 
 ## Use it on your Mac (Intel or Apple silicon)
 
