@@ -27,7 +27,7 @@ at z = 0 and the bottom of the swag is at z = -drop. Units are mm.
 
 Usage
 -----
-    python3 swag_tool.py                       # 7" cake, 1/8" frosting, 5 swags, 3" drop
+    python3 swag_tool.py                       # 7" cake, 1/8" frosting, 5 swags, 2" drop
     python3 swag_tool.py --frosting 0.25       # thicker frosting
     python3 swag_tool.py --cake-diameter 8 --swags 6 --drop 2.5
 
@@ -199,7 +199,8 @@ def build(p):
     # 4. Handle fin on the back, centred, standing on the flat top edge
     #    (which is the print-bed face). 45 deg underside, rounded edges.
     y0, y1 = R_po - 1.0, R_po + p.fin_depth
-    zf = z_top - p.fin_height
+    fin_h = p.fin_height or min(55.0, 0.7 * (D + z_top))
+    zf = z_top - fin_h
     fin = (cq.Workplane("YZ")
            .polyline([(y0, z_top), (y1, z_top), (y1, zf + (y1 - y0)), (y0, zf)])
            .close()
@@ -210,7 +211,7 @@ def build(p):
 
     # Labels debossed into the fin's flat faces.
     yc = (y0 + y1) / 2.0 + 1.0
-    zc = z_top - p.fin_height * 0.32
+    zc = z_top - fin_h * 0.32
     label_a = f'{frac_label(p.cake_diameter)}in x{p.swags}'
     label_b = f'{frac_label(p.cake_diameter + 2 * p.frosting)}in'
     for side, txt in ((+1, label_a), (-1, label_b)):
@@ -256,7 +257,7 @@ def main():
     ap.add_argument("--frosting", type=float, default=0.125,
                     help="frosting thickness per side, inches (tool fits cake + 2x this)")
     ap.add_argument("--swags", type=int, default=5, help="swags around the cake")
-    ap.add_argument("--drop", type=float, default=3.0, help="swag depth, inches")
+    ap.add_argument("--drop", type=float, default=2.0, help="swag depth, inches")
     ap.add_argument("--ridge-height", type=float, default=3.0, help="mm, plate stand-off from frosting")
     ap.add_argument("--ridge-slope", type=float, default=1.0, help="ridge upper side run/rise (1 = 45 deg)")
     ap.add_argument("--tip-width", type=float, default=1.0, help="mm, width of the embossing tip")
@@ -265,7 +266,8 @@ def main():
                     help="mm of plate above the swag points (default 5/8in: line the tool's top "
                          "edge up with the top of the cake and every point lands 5/8in below it)")
     ap.add_argument("--fin-depth", type=float, default=22.0, help="mm the handle sticks out")
-    ap.add_argument("--fin-height", type=float, default=55.0, help="mm")
+    ap.add_argument("--fin-height", type=float, default=None,
+                    help="mm (default: 70%% of the tool height, at most 55)")
     ap.add_argument("--fin-thickness", type=float, default=6.0, help="mm")
     ap.add_argument("--fin-fillet", type=float, default=2.5, help="mm")
     ap.add_argument("--label-size", type=float, default=4.5, help="mm text height")

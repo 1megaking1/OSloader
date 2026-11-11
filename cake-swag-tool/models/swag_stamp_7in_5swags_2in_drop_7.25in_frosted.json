@@ -8,11 +8,11 @@
   "arc_length_per_swag_mm": 115.705,
   "arc_length_at_bare_cake_in": 4.3982,
   "chord_between_points_in": 4.2614,
-  "drop_in": 3.0,
-  "catenary_a_in": 1.1729,
-  "catenary_a_mm": 29.791,
-  "swag_line_length_in": 8.0093,
-  "end_angle_from_horizontal_deg": 73.68,
+  "drop_in": 2.0,
+  "catenary_a_in": 1.5483,
+  "catenary_a_mm": 39.328,
+  "swag_line_length_in": 6.3854,
+  "end_angle_from_horizontal_deg": 64.13,
   "ridge_tip_radius_mm": 92.075,
   "plate_inner_radius_mm": 95.075,
   "plate_outer_radius_mm": 98.075,
@@ -20,13 +20,13 @@
   "tip_width_mm": 1.0,
   "top_band_above_points_mm": 15.875,
   "stl_watertight": true,
-  "stl_triangles": 17486,
+  "stl_triangles": 17286,
   "stl_orientation": "print",
   "size_mm": [
     115.3,
     45.6,
-    92.6
+    67.2
   ],
-  "volume_cm3": 32.64,
+  "volume_cm3": 24.45,
   "valid_brep": true
 }

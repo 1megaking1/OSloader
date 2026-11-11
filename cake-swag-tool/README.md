@@ -1,4 +1,4 @@
-# Cake swag stamp: 7" cake, 5 swags, 3" drop
+# Cake swag stamp: 7" cake, 5 swags, 2" drop
 
 A 3D-printable stamp that presses one drape (swag) line into the side of a frosted round cake. Use it five times around a 7" cake and the swags meet point to point.
 
@@ -16,9 +16,9 @@ The only thing that has to match your cake is the **frosted** diameter. Five sta
 
 | File (`models/`) | Frosting per side | Fits frosted Ø | Frosted circumference | Each swag spans (along the cake) |
 |---|---|---|---|---|
-| `swag_stamp_7in_5swags_3in_drop_7.25in_frosted.stl` (**default**) | 1/8" | 7.25" | 22.78" | 4.555" |
-| `swag_stamp_7in_5swags_3in_drop_7.375in_frosted.stl` | 3/16" | 7.375" | 23.17" | 4.634" |
-| `swag_stamp_7in_5swags_3in_drop_7.5in_frosted.stl` | 1/4" | 7.5" | 23.56" | 4.712" |
+| `swag_stamp_7in_5swags_2in_drop_7.25in_frosted.stl` (**default**) | 1/8" | 7.25" | 22.78" | 4.555" |
+| `swag_stamp_7in_5swags_2in_drop_7.375in_frosted.stl` | 3/16" | 7.375" | 23.17" | 4.634" |
+| `swag_stamp_7in_5swags_2in_drop_7.5in_frosted.stl` | 1/4" | 7.5" | 23.56" | 4.712" |
 
 Not sure which one? Wrap a strip of paper around the frosted cake, mark the overlap, and pick the closest circumference in the table. The handle is labelled with both the cake size (`7in x5`) and the fit (`7 1/4in`, and so on).
 
@@ -26,7 +26,7 @@ Each `.stl` is already in print orientation. Each `.step` is the editable CAD so
 
 ## The geometry
 
-* **True hanging-cable curve.** The swag line is a catenary, `z = a·cosh(x/a) − a·cosh(L/2a)`. It has a 3.000" sag over the span and meets the next swag at about 74° from horizontal. For the default fit, a = 1.1729" and the line is 8.01" long.
+* **True hanging-cable curve.** The swag line is a catenary, `z = a·cosh(x/a) − a·cosh(L/2a)`. It has a 2.000" sag over the span and meets the next swag at about 64° from horizontal. For the default fit, a = 1.5483" and the line is 6.39" long.
 * **Rolled onto the cake, with the arc length preserved.** The curve is laid out on the cake side as if it were flattened. It is then wrapped around the cylinder by arc length (angle = distance / radius), so the span measured *along the cake* stays exactly 1/5 of the circumference (72°).
   * The straight tip-to-tip distance is shorter: 4.261" for the default.
   * A chain hanging on the side of a smooth vertical cylinder takes exactly this rolled catenary shape, so the curve is physically correct as well as looking right.
@@ -39,7 +39,7 @@ Each `.stl` is already in print orientation. Each `.step` is the editable CAD so
   * The tool ends exactly at the swag points (±36°), and the tip runs right to the end faces.
   * The top edge is 5/8" above the points. Hold the top edge level with the top of the cake and every point lands at the same height.
 
-Checked on the exported meshes: single watertight solid; span ±36.000°; tip within ±0.002 mm of 0.5 mm either side of the catenary along its full length; bottom of the swag line at 3.000"; five copies rotated 72° touch with zero overlap. STEP files re-import as one valid solid.
+Checked on the exported meshes: single watertight solid; span ±36.000°; tip within ±0.002 mm of 0.5 mm either side of the catenary along its full length; bottom of the swag line at 2.000"; five copies rotated 72° touch with zero overlap. STEP files re-import as one valid solid.
 
 ## Using it
 
@@ -52,7 +52,7 @@ Checked on the exported meshes: single watertight solid; span ±36.000°; tip wi
 ## Printing
 
 * PLA or PETG, 0.2 mm layers, 3 walls, 15–20% infill, **no supports**. A 5 mm brim helps the thin edge stay down.
-* The part is about 115 × 46 × 93 mm, at most about 40 g of PLA.
+* The part is about 115 × 46 × 67 mm, at most about 30 g of PLA.
 * 3D prints have tiny crevices. Use a food-contact-rated filament, wash before and after use, and don't leave the tool in contact with the frosting longer than needed.
 
 ## Making other sizes
@@ -60,7 +60,7 @@ Checked on the exported meshes: single watertight solid; span ±36.000°; tip wi
 `swag_tool.py` generates everything. It needs `pip install cadquery`, plus `trimesh` for the STL clean-up check.
 
 ```bash
-python3 swag_tool.py                                  # default: 7", 1/8" frosting, 5 swags, 3" drop
+python3 swag_tool.py                                  # default: 7", 1/8" frosting, 5 swags, 2" drop
 python3 swag_tool.py --frosting 0.25                  # thicker frosting
 python3 swag_tool.py --cake-diameter 8 --swags 6 --drop 2.5
 python3 swag_tool.py --help                           # ridge height, tip width, plate, handle, ...
