@@ -1,0 +1,28 @@
+{
+  "moon_diameter_in": 1.0,
+  "moon_diameter_mm": 25.4,
+  "bite_radius_mm": 10.414,
+  "bite_offset_mm": 5.334,
+  "back_thickness_mm": 7.62,
+  "horn_tips_mm": [
+    7.62,
+    10.16
+  ],
+  "horn_tip_radius_mm": 0.5,
+  "moon_area_mm2": 215.44,
+  "height_mm": 15.0,
+  "wall_at_disk_mm": 1.2,
+  "wall_at_cutting_edge_mm": 0.5,
+  "blade_taper_deg": 2.672,
+  "disk_diameter_mm": 32.8,
+  "disk_thickness_mm": 1.6,
+  "max_cheese_thickness_mm": 13.4,
+  "stl_watertight": true,
+  "size_mm": [
+    32.8,
+    32.8,
+    15.01
+  ],
+  "volume_cm3": 1.979,
+  "valid_brep": true
+}
