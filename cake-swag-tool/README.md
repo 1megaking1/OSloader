@@ -26,10 +26,13 @@ Each `.stl` is already in print orientation. Each `.step` is the editable CAD so
 
 ## The geometry
 
-* **True hanging-cable curve.** The swag line is a catenary, `z = a·cosh(x/a) − a·cosh(L/2a)`. It has a 2.000" sag over the span and meets the next swag at about 64° from horizontal. For the default fit, a = 1.5483" and the line is 6.39" long.
+* **Gentle hanging-garland curve.** The swag line is a hanging cable whose weight tapers from the middle to nothing at the points, the way a fabric swag or piped garland is fullest in the middle. It is still real cable physics, solved numerically.
+  * Span and drop are unchanged: 4.555" across and exactly 2.000" deep.
+  * It comes into the points at 56° from horizontal. A uniform cable (pure catenary) with the same span and drop meets them at 64°. The bottom radius is 1.22" and the line is 6.30" long.
+  * `--taper 0` gives back the pure catenary. Values between 0 and 1 land in between. Much gentler than this isn't possible at the same span and drop without the bottom pinching into a V.
 * **Rolled onto the cake, with the arc length preserved.** The curve is laid out on the cake side as if it were flattened. It is then wrapped around the cylinder by arc length (angle = distance / radius), so the span measured *along the cake* stays exactly 1/5 of the circumference (72°).
   * The straight tip-to-tip distance is shorter: 4.261" for the default.
-  * A chain hanging on the side of a smooth vertical cylinder takes exactly this rolled catenary shape, so the curve is physically correct as well as looking right.
+  * A cable hanging on the side of a smooth vertical cylinder takes exactly this rolled shape, so the curve is physically correct as well as looking right.
 * **Sized for frosting.** The 4.4" figure (π × 7 / 5 = 4.398") is the arc on the *bare* cake. The marks are made on the frosting, which sits farther out, so the default tool is built for a 7.25" frosted surface and spans 4.555".
   * A tool built to 4.398" would leave a gap of about 0.8" after five stamps on a cake frosted 1/8" thick.
 * **Only the tip touches.** A 1.0 mm wide tip on the swag line stands 3 mm proud of the 3 mm backing plate, so the plate never smears the frosting.
@@ -37,22 +40,22 @@ Each `.stl` is already in print orientation. Each `.step` is the editable CAD so
   * Its upper side is a 45° chamfer, which keeps it strong and printable without supports.
 * **Built-in alignment.**
   * The tool ends exactly at the swag points (±36°), and the tip runs right to the end faces.
-  * The top edge is 5/8" above the points. Hold the top edge level with the top of the cake and every point lands at the same height.
+  * The top edge is level with the points: the tool is just the swag shape, with no band above it. Line the two top corners up with your marks and keep the top edge level.
 
-Checked on the exported meshes: single watertight solid; span ±36.000°; tip within ±0.002 mm of 0.5 mm either side of the catenary along its full length; bottom of the swag line at 2.000"; five copies rotated 72° touch with zero overlap. STEP files re-import as one valid solid.
+Checked on the exported meshes: single watertight solid; span ±36.000°; tip within ±0.002 mm of 0.5 mm either side of the swag line along its full length (it's trimmed flush with the top edge only in the last 0.4 mm at each point); bottom of the swag line at 2.000"; five copies rotated 72° touch with zero overlap. STEP files re-import as one valid solid.
 
 ## Using it
 
 1. Chill the cake until the buttercream has crusted or firmed up.
-2. Optionally mark five points evenly around the cake, 5/8" below the top edge. A cake divider or a paper strip folded into fifths works.
+2. Mark five points evenly around the cake at the height you want the swag points. A cake divider or a paper strip folded into fifths works.
 3. Hold the handle and press the stamp straight in until the tip leaves a light line, about 1–2 mm deep. Lift it straight off.
-4. Put the next stamp's end exactly on the previous swag's end point, keep the top edge level with the cake top, and press. Repeat all the way around.
+4. Put the next stamp's top corner exactly on the previous swag's end point, keep the top edge level, and press. Repeat all the way around.
 5. If you end up between sizes, centre each stamp on the pre-marked points instead of chaining end to end. The small error then splits into five tiny steps that hide under the rosette, dot or bow you pipe at each point.
 
 ## Printing
 
 * PLA or PETG, 0.2 mm layers, 3 walls, 15–20% infill, **no supports**. A 5 mm brim helps the thin edge stay down.
-* The part is about 115 × 46 × 67 mm, at most about 30 g of PLA.
+* The part is about 115 × 46 × 51 mm, at most about 22 g of PLA. It prints standing on its flat top edge, with the two tips at bed level.
 * 3D prints have tiny crevices. Use a food-contact-rated filament, wash before and after use, and don't leave the tool in contact with the frosting longer than needed.
 
 ## Making other sizes

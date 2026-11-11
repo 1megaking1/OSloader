@@ -9,15 +9,17 @@ that meet point to point.
 
 Geometry
 --------
-* The swag line is a true catenary (the shape of a hanging cable), designed in
-  the flat "unrolled" side of the cake: s = distance along the circumference,
-  z = height. The span is exactly 1/N of the circumference of the FROSTED cake,
-  and the sag (depth) is the requested drop.
+* The swag line is a hanging cable, designed in the flat "unrolled" side of the
+  cake: s = distance along the circumference, z = height. The span is exactly
+  1/N of the circumference of the FROSTED cake, and the sag (depth) is the
+  requested drop. By default the cable is a garland that is fullest in the
+  middle and tapers towards the points, which comes into the points more gently
+  than a uniform cable (--taper 0 gives the pure catenary).
 * That flat curve is then rolled onto the cylinder by arc length
   (angle = s / R_contact), so the span measured along the cake surface stays
   exactly 1/N of the circumference: N stampings close the loop with no gap and
-  no overlap. (A chain hanging on a frictionless vertical cylinder follows this
-  same rolled catenary, so the shape is physically "right", not just a look-alike.)
+  no overlap. (A cable hanging on a frictionless vertical cylinder takes this
+  same rolled shape, so the curve is physically "right", not just a look-alike.)
 * The ridge tip sits on the contact radius R_contact = cake radius + frosting
   allowance. The plate stands off the frosting by the ridge height, so only the
   ridge touches the cake.
@@ -56,30 +58,74 @@ def solve_catenary(half_span, sag):
                   half_span / 50.0, half_span * 100.0, xtol=1e-12)
 
 
-class Catenary:
-    """z(u) = a cosh(u/a) - a cosh(H/a): end points (+-H, 0), bottom (0, -sag)."""
+class SwagCurve:
+    """A hanging cable (garland) between the points (+-H, 0), sagging to (0, -sag).
 
-    def __init__(self, half_span, sag):
-        self.H = half_span
-        self.sag = sag
-        self.a = solve_catenary(half_span, sag)
-        self.z0 = self.a * math.cosh(half_span / self.a)
+    Its weight per unit length tapers from the middle towards the points:
+
+        w(t) = (1 - taper) + taper * cos(pi t / 2),   t = |x| / H
+
+    and the cable obeys ordinary cable statics, T_h * z'' = w * sqrt(1 + z'^2).
+    taper = 0 is a uniform cable, i.e. an exact catenary. taper = 1 is a
+    garland that is fullest in the middle and weighs nothing at the points (as
+    fabric swags and piped garlands look). For the same span and sag it comes
+    into the points less steeply, with a slightly rounder bottom.
+    Beyond the points the curve continues with the end weight (used only to run
+    cutting surfaces cleanly past the ends of the tool)."""
+
+    def __init__(self, half_span, sag, taper=0.0, extend=10.0, n=40001):
+        from scipy.integrate import solve_ivp
+        H = self.H = half_span
+        self.sag, self.taper = sag, taper
+        X = H + extend
+
+        def w(x):
+            t = min(abs(x) / H, 1.0)
+            return (1.0 - taper) + taper * math.cos(math.pi * t / 2.0)
+
+        def solve(k):
+            def f(x, y):
+                g = math.sqrt(1.0 + y[1] * y[1])
+                return [y[1], k * w(x) * g, g]
+            return solve_ivp(f, [0.0, X], [0.0, 0.0, 0.0], method="DOP853",
+                             rtol=1e-11, atol=1e-12, dense_output=True)
+
+        k_cat = 1.0 / solve_catenary(H, sag)
+        self.k = brentq(lambda k: solve(k).sol(H)[0] - sag, 0.3 * k_cat, 6.0 * k_cat,
+                        xtol=1e-14)
+        sol = solve(self.k)
+        self._x = np.linspace(0.0, X, n)
+        y = sol.sol(self._x)
+        self._z = y[0] - sag            # z(0) = -sag, z(H) = 0
+        self._zp = y[1]
+        self._sig = y[2]                 # arc length from the middle
+        self._sig_H = float(sol.sol(H)[2])
+        self._zp_H = float(sol.sol(H)[1])
+        self.bottom_radius = 1.0 / (self.k * w(0.0))
 
     def length(self):
-        return 2.0 * self.a * math.sinh(self.H / self.a)
+        return 2.0 * self._sig_H
 
     def end_angle_deg(self):
-        """Angle of the curve to the horizontal at the end points."""
-        return math.degrees(math.atan(math.sinh(self.H / self.a)))
+        """Angle of the curve to the horizontal at the points."""
+        return math.degrees(math.atan(self._zp_H))
+
+    def sigma_of_u(self, u):
+        u = np.asarray(u, float)
+        return np.sign(u) * np.interp(np.abs(u), self._x, self._sig)
+
+    def u_of_sigma(self, sigma):
+        sigma = np.asarray(sigma, float)
+        return np.sign(sigma) * np.interp(np.abs(sigma), self._sig, self._x)
 
     def offset(self, u, n):
-        """Point at parameter u, offset by n along the outward (downward) normal.
-        n > 0 is below/outside the U, n < 0 is inside it."""
-        a = self.a
-        sh, ch = np.sinh(u / a), np.cosh(u / a)
-        s = u + n * sh / ch
-        z = a * ch - self.z0 - n / ch
-        return s, z
+        """Point at horizontal position u, offset by n along the outward
+        (downward) normal. n > 0 is below/outside the U, n < 0 is inside it."""
+        u = np.asarray(u, float)
+        z = np.interp(np.abs(u), self._x, self._z)
+        zp = np.sign(u) * np.interp(np.abs(u), self._x, self._zp)
+        g = np.sqrt(1.0 + zp * zp)
+        return u + n * zp / g, z - n / g
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +139,10 @@ def wrap(s, z, r, r_contact):
 
 
 def wrapped_spline(cat, sigma, n, r, r_contact):
-    """Spline through the rolled offset curve, parameterised by catenary arc
-    length sigma, so curves at different radii/offsets correspond point by
-    point (gives clean ruled surfaces between them)."""
-    u = cat.a * np.arcsinh(sigma / cat.a)
+    """Spline through the rolled offset curve, parameterised by the swag
+    line's arc length sigma, so curves at different radii/offsets correspond
+    point by point (gives clean ruled surfaces between them)."""
+    u = cat.u_of_sigma(sigma)
     s, z = cat.offset(u, n)
     pts = [wrap(si, zi, r, r_contact) for si, zi in zip(s, z)]
     return cq.Edge.makeSpline(pts, parameters=[float(v) for v in sigma])
@@ -106,7 +152,7 @@ def ruled_through(cat, sigma, sec1, sec2, t_lo, t_hi, r_contact):
     """Ruled surface whose rulings are the exact 3D lines through the rolled
     offset points sec1 = (n1, r1) and sec2 = (n2, r2), extended to line
     parameters t_lo..t_hi (0 at sec1, 1 at sec2)."""
-    u = cat.a * np.arcsinh(sigma / cat.a)
+    u = cat.u_of_sigma(sigma)
     (n1, r1), (n2, r2) = sec1, sec2
     s1, z1 = cat.offset(u, n1)
     s2, z2 = cat.offset(u, n2)
@@ -159,16 +205,16 @@ def build(p):
     half_deg = math.degrees(span_angle / 2.0)
     S = R_c * span_angle                      # developed span = arc length
     D = p.drop * IN
-    cat = Catenary(S / 2.0, D)
+    cat = SwagCurve(S / 2.0, D, p.taper, p.extend + 2.0)
 
     tip_n = p.tip_width / 2.0                 # bottom edge offset (outer side)
     z_top = p.top_band
     z_lo = -D - 20.0
 
-    # Sample the catenary uniformly by arc length, extended past the end
+    # Sample the swag line uniformly by arc length, extended past the end
     # points so every cutting surface runs right through the tool.
     u_ext = cat.H + p.extend
-    sig_e = cat.a * math.sinh(u_ext / cat.a)
+    sig_e = float(cat.sigma_of_u(u_ext))
     sigma = np.linspace(-sig_e, sig_e, p.samples)
 
     # 1. Annular wedge: tip radius to plate outer radius, exactly +-180/N deg.
@@ -199,7 +245,7 @@ def build(p):
     # 4. Handle fin on the back, centred, standing on the flat top edge
     #    (which is the print-bed face). 45 deg underside, rounded edges.
     y0, y1 = R_po - 1.0, R_po + p.fin_depth
-    fin_h = p.fin_height or min(55.0, 0.7 * (D + z_top))
+    fin_h = p.fin_height or min(55.0, 0.8 * (D + z_top))
     zf = z_top - fin_h
     fin = (cq.Workplane("YZ")
            .polyline([(y0, z_top), (y1, z_top), (y1, zf + (y1 - y0)), (y0, zf)])
@@ -236,16 +282,24 @@ def build(p):
         "arc_length_at_bare_cake_in": round(R_cake * span_angle / IN, 4),
         "chord_between_points_in": round(2 * R_c * math.sin(span_angle / 2) / IN, 4),
         "drop_in": p.drop,
-        "catenary_a_in": round(cat.a / IN, 4),
-        "catenary_a_mm": round(cat.a, 3),
+        "curve": ("uniform hanging cable (catenary)" if p.taper == 0 else
+                  "hanging garland, weight tapering towards the points "
+                  "w = (1-taper) + taper*cos(pi*x/span)"),
+        "taper": p.taper,
         "swag_line_length_in": round(cat.length() / IN, 4),
         "end_angle_from_horizontal_deg": round(cat.end_angle_deg(), 2),
+        "uniform_cable_end_angle_deg": round(math.degrees(math.atan(
+            math.sinh(cat.H / solve_catenary(cat.H, D)))), 2),
+        "bottom_radius_mm": round(cat.bottom_radius, 2),
         "ridge_tip_radius_mm": round(R_c, 3),
         "plate_inner_radius_mm": round(R_pi, 3),
         "plate_outer_radius_mm": round(R_po, 3),
         "ridge_height_mm": p.ridge_height,
         "tip_width_mm": p.tip_width,
         "top_band_above_points_mm": p.top_band,
+        # swag line in the unrolled side of the cake: [s along the cake, z] mm
+        "swag_line_unrolled_mm": [[round(float(a), 3), round(float(b), 3)] for a, b in
+                                  zip(*cat.offset(np.linspace(-cat.H, cat.H, 161), 0.0))],
     }
     return body, info
 
@@ -258,13 +312,17 @@ def main():
                     help="frosting thickness per side, inches (tool fits cake + 2x this)")
     ap.add_argument("--swags", type=int, default=5, help="swags around the cake")
     ap.add_argument("--drop", type=float, default=2.0, help="swag depth, inches")
+    ap.add_argument("--taper", type=float, default=1.0,
+                    help="0 = uniform hanging cable (pure catenary, steepest at the points); "
+                         "1 = garland fullest in the middle, tapering to nothing at the points "
+                         "(gentler sides, same span and drop). Default 1")
     ap.add_argument("--ridge-height", type=float, default=3.0, help="mm, plate stand-off from frosting")
     ap.add_argument("--ridge-slope", type=float, default=1.0, help="ridge upper side run/rise (1 = 45 deg)")
     ap.add_argument("--tip-width", type=float, default=1.0, help="mm, width of the embossing tip")
     ap.add_argument("--plate-thickness", type=float, default=3.0, help="mm")
-    ap.add_argument("--top-band", type=float, default=0.625 * IN,
-                    help="mm of plate above the swag points (default 5/8in: line the tool's top "
-                         "edge up with the top of the cake and every point lands 5/8in below it)")
+    ap.add_argument("--top-band", type=float, default=0.0,
+                    help="mm of plate above the swag points (default 0: the top edge is level "
+                         "with the points)")
     ap.add_argument("--fin-depth", type=float, default=22.0, help="mm the handle sticks out")
     ap.add_argument("--fin-height", type=float, default=None,
                     help="mm (default: 70%% of the tool height, at most 55)")
