@@ -1,0 +1,32 @@
+{
+  "cake_diameter_in": 7.0,
+  "frosting_allowance_in": 0.25,
+  "frosted_diameter_in": 7.5,
+  "swags": 5,
+  "span_angle_deg": 72.0,
+  "arc_length_per_swag_in": 4.7124,
+  "arc_length_per_swag_mm": 119.695,
+  "arc_length_at_bare_cake_in": 4.3982,
+  "chord_between_points_in": 4.4084,
+  "drop_in": 3.0,
+  "catenary_a_in": 1.2396,
+  "catenary_a_mm": 31.487,
+  "swag_line_length_in": 8.1087,
+  "end_angle_from_horizontal_deg": 73.0,
+  "ridge_tip_radius_mm": 95.25,
+  "plate_inner_radius_mm": 98.25,
+  "plate_outer_radius_mm": 101.25,
+  "ridge_height_mm": 3.0,
+  "tip_width_mm": 1.0,
+  "top_band_above_points_mm": 15.875,
+  "stl_watertight": true,
+  "stl_triangles": 20422,
+  "stl_orientation": "print",
+  "size_mm": [
+    119.0,
+    46.2,
+    92.6
+  ],
+  "volume_cm3": 33.49,
+  "valid_brep": true
+}
